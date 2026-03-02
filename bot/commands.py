@@ -45,6 +45,10 @@ from services.flutterwave import (
     create_payment_link, get_country_config, detect_country_from_language,
     convert_to_ngn, convert_from_ngn, COUNTRY_CONFIG,
 )
+from services.otp import (
+    send_otp_message, verify_otp, needs_otp, is_account_otp_flagged,
+    get_otp_failure_count, LARGE_SEND_THRESHOLD,
+)
 from services.groq import get_ai_response, detect_intent
 from services.notifications import notify_user, notify_admin
 from utils.formatting import (
@@ -77,6 +81,7 @@ from bot.keyboards import (
     after_game_keyboard,
     escrow_create_keyboard, escrow_detail_keyboard, escrow_list_keyboard,
     support_keyboard, fund_method_keyboard,
+    merchant_keyboard, merchant_apply_keyboard, merchant_pay_confirm_keyboard,
 )
 
 logger = logging.getLogger("sidicoin.commands")
@@ -139,6 +144,51 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         username = from_user.username or f"user_{user_id}"
         full_name = f"{from_user.first_name or ''} {from_user.last_name or ''}".strip()
         first_name = from_user.first_name or username
+
+        # Check for merchant payment link: pay_MERCHANTID_AMOUNT_REF
+        if command.args and command.args.startswith("pay_"):
+            existing = get_user(user_id)
+            if not existing:
+                await message.answer(f"Type /start to create your wallet first, then click the link again {STAR}")
+                return
+            parts = command.args.split("_", 3)
+            if len(parts) >= 3:
+                merchant_id = parts[1]
+                try:
+                    pay_amount = float(parts[2])
+                except (ValueError, IndexError):
+                    await message.answer("Invalid payment link.", reply_markup=home_keyboard())
+                    return
+                pay_ref = parts[3] if len(parts) > 3 else f"PAY-{int(time.time())}"
+
+                merchant = get_user(merchant_id)
+                if not merchant or not merchant.get("is_merchant") or not merchant.get("merchant_approved"):
+                    await message.answer("This merchant is not verified.", reply_markup=home_keyboard())
+                    return
+                if str(merchant_id) == str(user_id):
+                    await message.answer("You can't pay yourself.", reply_markup=home_keyboard())
+                    return
+
+                merchant_name = merchant.get("merchant_name", merchant.get("username", "Merchant"))
+                fee_rate = float(merchant.get("merchant_fee_rate", 0.02))
+                fee = pay_amount * fee_rate
+                naira = sidi_to_naira(pay_amount)
+
+                text = (
+                    f"\U0001f6d2 <b>Merchant Payment</b>\n\n"
+                    f"{DIVIDER}\n\n"
+                    f"  Pay to:     <b>{_safe_escape(merchant_name)}</b>\n"
+                    f"  Amount:     <b>{fmt_number(pay_amount)} SIDI</b> ({fmt_naira(naira)})\n"
+                    f"  Reference:  <code>{_safe_escape(pay_ref)}</code>\n\n"
+                    f"{DIVIDER}\n\n"
+                    f"This payment goes directly to the merchant.\n"
+                    f"Press confirm to pay {STAR}"
+                )
+                await message.answer(
+                    text,
+                    reply_markup=merchant_pay_confirm_keyboard(merchant_id, pay_amount, pay_ref),
+                )
+                return
 
         # Check for referral code
         referred_by = ""
@@ -1098,6 +1148,8 @@ async def cmd_help(message: Message):
         f"  /price \u2014 SIDI price & market data\n"
         f"  /stats \u2014 Platform statistics\n"
         f"  /leaderboard \u2014 Top holders\n\n"
+        f"  <b>\U0001f3e2 Business</b>\n"
+        f"  /merchant \u2014 Accept SIDI payments\n\n"
         f"  <b>\u2764\ufe0f Support</b>\n"
         f"  /support \u2014 Help keep Sidicoin free\n\n"
         f"  <b>\u2139\ufe0f Info</b>\n"
@@ -1169,19 +1221,27 @@ async def cmd_about(message: Message):
     """About Sidicoin."""
     text = (
         f"{STAR} <b>About Sidicoin</b>\n\n"
-        f"Sidicoin (SIDI) is a cryptocurrency built on the TON "
-        f"blockchain with one mission \u2014 make financial transfers "
-        f"across Africa instant, free and accessible to everyone.\n\n"
+        f"Sidicoin (SIDI) is a digital currency for instant "
+        f"money transfers \u2014 with one mission: make sending "
+        f"money worldwide instant, free, and accessible to everyone.\n\n"
         f"{DIVIDER}\n\n"
+        f"  <b>Why Sidicoin?</b>\n\n"
+        f"  \u2022 Zero fees on everything\n"
         f"  \u2022 No bank account required\n"
-        f"  \u2022 No crypto knowledge needed\n"
-        f"  \u2022 No hidden fees on transfers\n"
+        f"  \u2022 Works in 13+ countries\n"
+        f"  \u2022 Escrow for safe P2P trades\n"
+        f"  \u2022 Telegram OTP security\n"
         f"  \u2022 Just Telegram and a @username\n\n"
         f"{THIN_DIVIDER}\n\n"
-        f"  Supply       10,000,000,000 SIDI\n"
-        f"  Price        {fmt_naira(25)} per SIDI\n"
-        f"  Blockchain   TON\n"
-        f"  Ticker       SIDI\n\n"
+        f"  <b>SIDI Facts</b>\n\n"
+        f"  Value        {fmt_naira(25)} per SIDI (stable)\n"
+        f"  Fees         Zero on all transactions\n"
+        f"  Ticker       SIDI\n"
+        f"  Security     Telegram OTP + Escrow\n\n"
+        f"  SIDI is a digital balance \u2014 like airtime\n"
+        f"  credit or mobile money. It is not a\n"
+        f"  speculative investment. 1 SIDI always\n"
+        f"  equals {fmt_naira(25)}.\n\n"
         f"{DIVIDER}\n\n"
         f"  Built for Africa. Going global {STAR}\n\n"
         f"  {BRAND}"
@@ -1397,6 +1457,35 @@ async def cmd_admin_pending(message: Message):
     await message.answer(text)
 
 
+@router.message(Command("admin_merchant_approve"))
+async def cmd_admin_merchant_approve(message: Message, bot: Bot):
+    """Approve a merchant application."""
+    if not _is_admin(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: /admin_merchant_approve <user_id>")
+        return
+    target_id = parts[1].strip()
+    user = get_user(target_id)
+    if not user or not user.get("is_merchant"):
+        await message.answer("User not found or hasn't applied.")
+        return
+    user["merchant_approved"] = True
+    save_user(target_id, user)
+    merchant_name = user.get("merchant_name", "")
+    await message.answer(
+        f"\u2705 Merchant approved: {merchant_name} (@{user.get('username', target_id)})"
+    )
+    # Notify merchant
+    await notify_user(
+        bot, target_id,
+        f"\U0001f389 <b>Merchant Approved!</b>\n\n"
+        f"Your business <b>{_safe_escape(merchant_name)}</b> is now verified.\n\n"
+        f"Type /merchant to generate payment links {STAR}",
+    )
+
+
 # =====================================================================
 #  CALLBACK QUERY HANDLERS
 # =====================================================================
@@ -1579,6 +1668,7 @@ async def cb_help(callback: CallbackQuery):
             f"  /history \u2014 Transactions\n"
             f"  /premium \u2014 Upgrade\n"
             f"  /price \u2014 Market data\n"
+            f"  /merchant \u2014 Business payments\n"
             f"  /about \u2014 About Sidicoin\n\n"
             f"  {BRAND} {STAR}"
         )
@@ -1778,12 +1868,49 @@ async def cb_onboard_3(callback: CallbackQuery):
 
 @router.callback_query(F.data == "send_confirm")
 async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
-    """Execute confirmed transfer."""
+    """Execute confirmed transfer -- OTP for large amounts."""
     try:
         action, data = get_pending_action(callback.from_user.id)
         if action != "send_confirm" or not data:
             await callback.answer("No pending transfer found")
             return
+
+        amount = float(data.get("amount", 0))
+
+        # OTP check for large sends
+        if needs_otp(callback.from_user.id, "send_confirm", amount):
+            if is_account_otp_flagged(callback.from_user.id):
+                await callback.message.edit_text(
+                    f"\u26d4 <b>Account Locked</b>\n\n"
+                    f"Too many failed verifications. Contact support {STAR}",
+                    reply_markup=home_button_keyboard(),
+                )
+                clear_pending_action(callback.from_user.id)
+                await callback.answer()
+                return
+
+            otp_result = await send_otp_message(bot, callback.from_user.id, "send_confirm", data)
+            if otp_result.get("cooldown"):
+                await callback.answer(otp_result["message"], show_alert=True)
+                return
+            if otp_result.get("success"):
+                set_pending_action(callback.from_user.id, "otp_verify", {
+                    "original_action": "send_execute",
+                    "original_data": data,
+                })
+                try:
+                    await callback.message.edit_text(
+                        f"\U0001f510 <b>Verification Required</b>\n\n"
+                        f"Large transfer of <b>{fmt_number(amount)} SIDI</b> detected.\n"
+                        f"A 6-digit code has been sent to you.\n"
+                        f"Enter the code to confirm.\n\n"
+                        f"Code expires in 5 minutes.",
+                        reply_markup=cancel_keyboard(),
+                    )
+                except TelegramBadRequest:
+                    pass
+                await callback.answer()
+                return
 
         try:
             await callback.message.edit_text("\U0001f4e1 Processing your transfer...")
@@ -2128,12 +2255,53 @@ async def cb_buy_cancel(callback: CallbackQuery):
 
 @router.callback_query(F.data == "sell_confirm")
 async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
-    """Execute cashout."""
+    """Execute cashout -- requires OTP verification."""
     try:
         action, data = get_pending_action(callback.from_user.id)
         if action != "sell_confirm" or not data:
             await callback.answer("No pending cashout found")
             return
+
+        # OTP check
+        if needs_otp(callback.from_user.id, "sell_confirm"):
+            if is_account_otp_flagged(callback.from_user.id):
+                await callback.message.edit_text(
+                    f"\u26d4 <b>Account Locked</b>\n\n"
+                    f"Too many failed verifications. Contact support {STAR}",
+                    reply_markup=home_button_keyboard(),
+                )
+                from services.notifications import notify_admin as _admin_notify
+                await _admin_notify(bot,
+                    f"\u26a0\ufe0f OTP FLAG: User {callback.from_user.id} locked "
+                    f"({get_otp_failure_count(callback.from_user.id)} failures)")
+                clear_pending_action(callback.from_user.id)
+                await callback.answer()
+                return
+
+            otp_result = await send_otp_message(bot, callback.from_user.id, "sell_confirm", data)
+            if otp_result.get("cooldown"):
+                await callback.answer(otp_result["message"], show_alert=True)
+                return
+            if otp_result.get("success"):
+                set_pending_action(callback.from_user.id, "otp_verify", {
+                    "original_action": "sell_execute",
+                    "original_data": data,
+                })
+                try:
+                    await callback.message.edit_text(
+                        f"\U0001f510 <b>Verification Required</b>\n\n"
+                        f"A 6-digit code has been sent to you.\n"
+                        f"Enter the code to confirm your cashout.\n\n"
+                        f"Code expires in 5 minutes.",
+                        reply_markup=cancel_keyboard(),
+                    )
+                except TelegramBadRequest:
+                    pass
+                await callback.answer()
+                return
+            else:
+                await callback.answer(otp_result.get("message", "Could not send code"), show_alert=True)
+                return
 
         try:
             await callback.message.edit_text("\U0001f4b8 Processing your cashout...")
@@ -2467,8 +2635,37 @@ async def cb_refer_copy(callback: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data == "settings_bank")
-async def cb_settings_bank(callback: CallbackQuery):
+async def cb_settings_bank(callback: CallbackQuery, bot: Bot):
     try:
+        # OTP check for bank details change
+        if needs_otp(callback.from_user.id, "bank_change"):
+            if is_account_otp_flagged(callback.from_user.id):
+                await callback.answer("Account locked due to failed verifications", show_alert=True)
+                return
+
+            otp_result = await send_otp_message(bot, callback.from_user.id, "bank_change", {})
+            if otp_result.get("cooldown"):
+                await callback.answer(otp_result["message"], show_alert=True)
+                return
+            if otp_result.get("success"):
+                set_pending_action(callback.from_user.id, "otp_verify", {
+                    "original_action": "bank_change_start",
+                    "original_data": {},
+                })
+                try:
+                    await callback.message.edit_text(
+                        f"\U0001f510 <b>Verification Required</b>\n\n"
+                        f"Changing bank details requires verification.\n"
+                        f"A 6-digit code has been sent to you.\n"
+                        f"Enter the code to proceed.\n\n"
+                        f"Code expires in 5 minutes.",
+                        reply_markup=cancel_keyboard(),
+                    )
+                except TelegramBadRequest:
+                    pass
+                await callback.answer()
+                return
+
         set_pending_action(callback.from_user.id, "settings_bank_name")
         await callback.message.edit_text(
             f"{STAR} <b>Update Bank Details</b>\n\n"
@@ -2712,6 +2909,39 @@ async def cb_escrow_view(callback: CallbackQuery):
 async def cb_escrow_fund(callback: CallbackQuery, bot: Bot):
     try:
         escrow_id = callback.data.replace("escrow_fund_", "")
+
+        # OTP check for escrow funding
+        if needs_otp(callback.from_user.id, "escrow_fund"):
+            if is_account_otp_flagged(callback.from_user.id):
+                await callback.answer("Account locked due to failed verifications", show_alert=True)
+                return
+
+            otp_data = {"escrow_id": escrow_id}
+            otp_result = await send_otp_message(bot, callback.from_user.id, "escrow_fund", otp_data)
+            if otp_result.get("cooldown"):
+                await callback.answer(otp_result["message"], show_alert=True)
+                return
+            if otp_result.get("success"):
+                set_pending_action(callback.from_user.id, "otp_verify", {
+                    "original_action": "escrow_fund_execute",
+                    "original_data": otp_data,
+                })
+                escrow = get_escrow(escrow_id)
+                amount = float(escrow.get("amount_sidi", 0)) if escrow else 0
+                try:
+                    await callback.message.edit_text(
+                        f"\U0001f510 <b>Verification Required</b>\n\n"
+                        f"Funding escrow of <b>{fmt_number(amount)} SIDI</b>.\n"
+                        f"A 6-digit code has been sent to you.\n"
+                        f"Enter the code to confirm.\n\n"
+                        f"Code expires in 5 minutes.",
+                        reply_markup=cancel_keyboard(),
+                    )
+                except TelegramBadRequest:
+                    pass
+                await callback.answer()
+                return
+
         result = fund_escrow(escrow_id, str(callback.from_user.id))
         if result.get("success"):
             escrow = get_escrow(escrow_id)
@@ -2908,6 +3138,372 @@ async def cb_support_sidi(callback: CallbackQuery):
         await callback.answer()
     except TelegramBadRequest:
         await callback.answer()
+
+
+# =====================================================================
+#  MERCHANT
+# =====================================================================
+
+@router.message(Command("merchant"))
+async def cmd_merchant(message: Message):
+    """Merchant tools -- generate payment links."""
+    try:
+        user = get_user(message.from_user.id)
+        if not user:
+            await message.answer(f"Type /start to create your wallet first {STAR}")
+            return
+
+        if user.get("is_merchant") and user.get("merchant_approved"):
+            merchant_name = user.get("merchant_name", user.get("username", ""))
+            total_received = float(user.get("merchant_total_received", 0))
+            total_fees = float(user.get("merchant_total_fees", 0))
+            fee_rate = float(user.get("merchant_fee_rate", 0.02))
+
+            text = (
+                f"\U0001f3e2 <b>Merchant Dashboard</b>\n\n"
+                f"  Business: <b>{_safe_escape(merchant_name)}</b>\n"
+                f"  Fee rate: <b>{fee_rate * 100:.1f}%</b> per transaction\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Total received: <b>{fmt_number(total_received)} SIDI</b>\n"
+                f"  Fees paid:      <b>{fmt_number(total_fees)} SIDI</b>\n"
+                f"  Net earned:     <b>{fmt_number(total_received - total_fees)} SIDI</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Generate a payment link to collect SIDI\n"
+                f"  from your customers. Share the link anywhere.\n\n"
+                f"  Users pay you free. You pay 2% service fee {STAR}"
+            )
+            await message.answer(text, reply_markup=merchant_keyboard())
+
+        elif user.get("is_merchant") and not user.get("merchant_approved"):
+            await message.answer(
+                f"\u23f3 <b>Application Pending</b>\n\n"
+                f"Your merchant application is being reviewed.\n"
+                f"We'll notify you once approved {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+        else:
+            text = (
+                f"\U0001f3e2 <b>Sidicoin for Business</b>\n\n"
+                f"Accept SIDI payments from customers.\n\n"
+                f"{DIVIDER}\n\n"
+                f"  <b>How it works:</b>\n\n"
+                f"  1. Apply to become a merchant\n"
+                f"  2. Generate payment links\n"
+                f"  3. Share links with customers\n"
+                f"  4. Receive SIDI instantly\n\n"
+                f"  <b>Pricing:</b>\n\n"
+                f"  \u2022 Customers pay: <b>Free</b>\n"
+                f"  \u2022 Merchant fee:  <b>2%</b> per transaction\n"
+                f"  \u2022 Cash out:      <b>Free</b>\n\n"
+                f"{DIVIDER}"
+            )
+            await message.answer(text, reply_markup=merchant_apply_keyboard())
+
+    except Exception as e:
+        logger.error(f"/merchant error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong {STAR}")
+
+
+@router.callback_query(F.data == "merchant_apply")
+async def cb_merchant_apply(callback: CallbackQuery, bot: Bot):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+
+        set_pending_action(callback.from_user.id, "merchant_apply_name")
+        await callback.message.edit_text(
+            f"\U0001f3e2 <b>Merchant Application</b>\n\n"
+            f"Enter your business name:",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data == "merchant_create_link")
+async def cb_merchant_create_link(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user or not user.get("merchant_approved"):
+            await callback.answer("Not a verified merchant")
+            return
+
+        set_pending_action(callback.from_user.id, "merchant_link_amount")
+        await callback.message.edit_text(
+            f"\U0001f517 <b>Generate Payment Link</b>\n\n"
+            f"Enter the amount in SIDI:",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data == "merchant_stats")
+async def cb_merchant_stats(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        total_received = float(user.get("merchant_total_received", 0))
+        total_fees = float(user.get("merchant_total_fees", 0))
+        await callback.answer(
+            f"Received: {fmt_number(total_received)} SIDI | Fees: {fmt_number(total_fees)} SIDI",
+            show_alert=True,
+        )
+    except Exception:
+        await callback.answer("Error loading stats")
+
+
+@router.callback_query(F.data.startswith("merchant_pay_"))
+async def cb_merchant_pay(callback: CallbackQuery, bot: Bot):
+    """Process merchant payment from deep link."""
+    try:
+        # Format: merchant_pay_MERCHANTID_AMOUNT_REF
+        parts = callback.data.split("_", 4)
+        if len(parts) < 5:
+            await callback.answer("Invalid payment")
+            return
+
+        merchant_id = parts[2]
+        try:
+            amount = float(parts[3])
+        except ValueError:
+            await callback.answer("Invalid amount")
+            return
+        ref = parts[4]
+
+        payer = get_user(callback.from_user.id)
+        if not payer:
+            await callback.answer("Please /start first")
+            return
+
+        merchant = get_user(merchant_id)
+        if not merchant or not merchant.get("merchant_approved"):
+            await callback.answer("Merchant not found")
+            return
+
+        # Check payer balance
+        payer_balance = float(payer.get("sidi_balance", 0))
+        if payer_balance < amount:
+            await callback.answer("Insufficient balance", show_alert=True)
+            return
+
+        # Calculate merchant fee (2%)
+        fee_rate = float(merchant.get("merchant_fee_rate", 0.02))
+        fee = amount * fee_rate
+        net_to_merchant = amount - fee
+
+        # Deduct from payer
+        update_balance(callback.from_user.id, -amount)
+        # Credit merchant (minus fee)
+        update_balance(merchant_id, net_to_merchant)
+
+        # Track merchant stats
+        merchant["merchant_total_received"] = float(merchant.get("merchant_total_received", 0)) + amount
+        merchant["merchant_total_fees"] = float(merchant.get("merchant_total_fees", 0)) + fee
+        save_user(merchant_id, merchant)
+
+        # Track platform revenue
+        increment_stat("merchant_fees_total", fee)
+        increment_stat("merchant_tx_count", 1)
+
+        # Record transactions
+        now = int(time.time())
+        tx_ref = generate_tx_reference()
+        merchant_name = merchant.get("merchant_name", merchant.get("username", ""))
+        payer_username = payer.get("username", "")
+
+        add_transaction(callback.from_user.id, {
+            "type": "merchant_pay", "amount": amount,
+            "description": f"Payment to {merchant_name} (ref: {ref})",
+            "timestamp": now, "reference": tx_ref,
+        })
+        add_transaction(merchant_id, {
+            "type": "merchant_receive", "amount": net_to_merchant,
+            "fee": fee,
+            "description": f"Payment from @{payer_username} (ref: {ref})",
+            "timestamp": now, "reference": tx_ref,
+        })
+
+        clear_pending_action(callback.from_user.id)
+        naira = sidi_to_naira(amount)
+
+        payer = get_user(callback.from_user.id)
+        new_balance = float(payer.get("sidi_balance", 0))
+
+        await callback.message.edit_text(
+            f"\u2705 <b>Payment Successful!</b>\n\n"
+            f"  Paid to:    <b>{_safe_escape(merchant_name)}</b>\n"
+            f"  Amount:     <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n"
+            f"  Reference:  <code>{_safe_escape(ref)}</code>\n\n"
+            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b> {STAR}",
+            reply_markup=home_keyboard(),
+        )
+        await callback.answer(f"Paid {fmt_number(amount)} SIDI!")
+
+        # Notify merchant
+        await notify_user(
+            bot, merchant_id,
+            f"\U0001f4b0 <b>Payment Received!</b>\n\n"
+            f"  From:      @{payer_username}\n"
+            f"  Amount:    <b>{fmt_number(amount)} SIDI</b>\n"
+            f"  Fee (2%):  -{fmt_number(fee)} SIDI\n"
+            f"  Net:       <b>{fmt_number(net_to_merchant)} SIDI</b>\n"
+            f"  Reference: {ref}\n\n"
+            f"  Type /merchant to view your dashboard {STAR}",
+        )
+
+    except Exception as e:
+        logger.error(f"merchant_pay error: {e}", exc_info=True)
+        await callback.answer("Payment failed")
+
+
+# =====================================================================
+#  OTP POST-VERIFICATION EXECUTORS
+# =====================================================================
+
+async def _execute_sell(message: Message, bot: Bot, user_id: int, data: dict):
+    """Execute cashout after OTP verification."""
+    try:
+        user = get_user(user_id)
+        lock_check = check_withdrawal_locks(user_id)
+        if not lock_check["can_withdraw"]:
+            await message.answer(
+                f"\u26d4 <b>Withdrawal Restricted</b>\n\n{lock_check['reason']} {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            clear_pending_action(user_id)
+            return
+
+        sidi_amount = float(data["sidi_amount"])
+        net_ngn = float(data["net_ngn"])
+        bank_code = data.get("bank_code", "")
+        bank_account = data.get("bank_account", "")
+        bank_name = data.get("bank_name", "")
+        account_name = data.get("account_name", "")
+        fee_sidi = float(data.get("fee_sidi", 0))
+
+        total_deduction = sidi_amount + fee_sidi
+        success = update_balance(user_id, -total_deduction)
+        if not success:
+            await message.answer(
+                f"Insufficient balance for cashout. Please try again {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            clear_pending_action(user_id)
+            return
+
+        reference = generate_tx_reference()
+        payout_result = process_payout(
+            bank_code=bank_code,
+            account_number=bank_account,
+            amount_ngn=net_ngn,
+            reference=reference,
+            narration=f"Sidicoin cashout - {account_name}",
+        )
+
+        now = int(time.time())
+        add_transaction(user_id, {
+            "type": "sell", "amount": sidi_amount,
+            "ngn_amount": net_ngn, "fee_sidi": fee_sidi,
+            "bank_name": bank_name, "bank_account": bank_account,
+            "description": f"Cashout to {bank_name} {bank_account}",
+            "timestamp": now, "reference": reference,
+            "status": "processing",
+        })
+
+        unlock_referral_earnings_on_tx(user_id)
+        user = get_user(user_id)
+        new_balance = float(user.get("sidi_balance", 0))
+
+        receipt = generate_receipt("Cashout", user.get("username", ""), bank_name, sidi_amount, fee_sidi, reference)
+        await message.answer(
+            f"\u2705 <b>Cashout Processing!</b>\n\n"
+            f"{receipt}\n\n"
+            f"  \U0001f3e6 {bank_name} - {bank_account}\n"
+            f"  \U0001f464 {_safe_escape(account_name)}\n"
+            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+            f"You'll receive {fmt_naira(net_ngn)} shortly {STAR}",
+            reply_markup=home_keyboard(),
+        )
+        clear_pending_action(user_id)
+
+    except Exception as e:
+        logger.error(f"_execute_sell error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}", reply_markup=home_keyboard())
+        clear_pending_action(user_id)
+
+
+async def _execute_send(message: Message, bot: Bot, user_id: int, data: dict):
+    """Execute send after OTP verification."""
+    try:
+        sender = get_user(user_id)
+        recipient_id = data["recipient_id"]
+        amount = float(data["amount"])
+        recipient_username = data.get("recipient_username", "")
+        recipient_name = data.get("recipient_name", "")
+
+        reference = generate_tx_reference()
+        success = transfer_sidi(user_id, recipient_id, amount)
+
+        if not success:
+            await message.answer(
+                f"Transfer failed. Insufficient balance or error {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            clear_pending_action(user_id)
+            return
+
+        increment_rate_count(user_id)
+        unlock_referral_earnings_on_tx(user_id)
+
+        now = int(time.time())
+        sender_username = sender.get("username", "")
+        add_transaction(user_id, {
+            "type": "send", "amount": amount,
+            "other_username": recipient_username,
+            "description": f"Sent to @{recipient_username}",
+            "timestamp": now, "reference": reference,
+        })
+        add_transaction(recipient_id, {
+            "type": "receive", "amount": amount,
+            "other_username": sender_username,
+            "description": f"Received from @{sender_username}",
+            "timestamp": now, "reference": reference,
+        })
+
+        clear_pending_action(user_id)
+        naira = sidi_to_naira(amount)
+        receipt = generate_receipt("Transfer", sender_username, recipient_username, amount, 0, reference)
+
+        sender = get_user(user_id)
+        new_balance = float(sender.get("sidi_balance", 0))
+
+        text = (
+            f"\u2705 <b>Transfer Complete!</b>\n\n"
+            f"{receipt}\n\n"
+            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b> {STAR}"
+        )
+        await message.answer(text, reply_markup=after_send_keyboard())
+
+        # Notify recipient
+        await notify_user(
+            bot, recipient_id,
+            f"\U0001f4b8 <b>You received money!</b>\n\n"
+            f"  From:   @{sender_username}\n"
+            f"  Amount: <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n\n"
+            f"  Your balance has been updated {STAR}",
+        )
+
+    except Exception as e:
+        logger.error(f"_execute_send error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}", reply_markup=home_keyboard())
+        clear_pending_action(user_id)
 
 
 # =====================================================================
@@ -3678,6 +4274,158 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         })
         clear_pending_action(user_id)
         await message.answer(text_msg, reply_markup=after_game_keyboard())
+
+    # -- Merchant flows --
+    elif action == "merchant_apply_name":
+        merchant_name = text.strip()[:50]
+        if not merchant_name:
+            await message.answer("Enter a valid business name:", reply_markup=cancel_keyboard())
+            return
+
+        user = get_user(user_id)
+        user["is_merchant"] = True
+        user["merchant_approved"] = False
+        user["merchant_name"] = merchant_name
+        save_user(user_id, user)
+        clear_pending_action(user_id)
+
+        await message.answer(
+            f"\u2705 <b>Application Submitted!</b>\n\n"
+            f"  Business: <b>{_safe_escape(merchant_name)}</b>\n\n"
+            f"  We'll review and notify you once approved.\n"
+            f"  This usually takes 24-48 hours {STAR}",
+            reply_markup=home_keyboard(),
+        )
+
+        # Notify admin
+        from services.notifications import notify_admin as _admin_notify
+        await _admin_notify(
+            bot,
+            f"\U0001f3e2 New merchant application:\n"
+            f"  User: @{user.get('username', user_id)}\n"
+            f"  ID: {user_id}\n"
+            f"  Business: {merchant_name}\n\n"
+            f"Approve: /admin_merchant_approve {user_id}",
+        )
+        return
+
+    elif action == "merchant_link_amount":
+        try:
+            link_amount = float(text.strip())
+        except ValueError:
+            await message.answer("Enter a valid number in SIDI:", reply_markup=cancel_keyboard())
+            return
+        if link_amount <= 0 or link_amount > 100000:
+            await message.answer("Amount must be between 1 and 100,000 SIDI:", reply_markup=cancel_keyboard())
+            return
+
+        ref = f"M{int(time.time())}"
+        merchant_link = f"https://t.me/SidicoinBot?start=pay_{user_id}_{link_amount}_{ref}"
+        naira = sidi_to_naira(link_amount)
+
+        clear_pending_action(user_id)
+        await message.answer(
+            f"\U0001f517 <b>Payment Link Generated!</b>\n\n"
+            f"  Amount: <b>{fmt_number(link_amount)} SIDI</b> ({fmt_naira(naira)})\n"
+            f"  Reference: <code>{ref}</code>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Share this link with your customer:\n\n"
+            f"  <code>{merchant_link}</code>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  When they click, they'll see your business name\n"
+            f"  and can confirm the payment. 2% fee applies {STAR}",
+            reply_markup=merchant_keyboard(),
+        )
+        return
+
+    # -- OTP verification flow --
+    elif action == "otp_verify":
+        code = text.strip()
+        if not code.isdigit() or len(code) != 6:
+            await message.answer(
+                "Enter the 6-digit code sent to you:",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        otp_result = verify_otp(user_id, code)
+
+        if otp_result.get("success"):
+            original_action = data.get("original_action", "")
+            original_data = data.get("original_data", {})
+            clear_pending_action(user_id)
+
+            # Route to the original action
+            if original_action == "sell_execute":
+                # Re-set pending and simulate the sell flow
+                set_pending_action(user_id, "sell_confirm", original_data)
+                # Create a fake callback-like flow by processing inline
+                from bot.commands import _execute_sell
+                await _execute_sell(message, bot, user_id, original_data)
+
+            elif original_action == "send_execute":
+                set_pending_action(user_id, "send_confirm", original_data)
+                from bot.commands import _execute_send
+                await _execute_send(message, bot, user_id, original_data)
+
+            elif original_action == "escrow_fund_execute":
+                escrow_id = original_data.get("escrow_id", "")
+                result = fund_escrow(escrow_id, str(user_id))
+                if result.get("success"):
+                    escrow = get_escrow(escrow_id)
+                    amount = float(escrow.get("amount_sidi", 0)) if escrow else 0
+                    await message.answer(
+                        f"\u2705 <b>Escrow Funded!</b>\n\n"
+                        f"<b>{fmt_number(amount)} SIDI</b> locked in escrow.\n\n"
+                        f"The seller can now deliver. Once you confirm\n"
+                        f"delivery, the funds will be released {STAR}",
+                        reply_markup=home_button_keyboard(),
+                    )
+                    if escrow:
+                        from services.notifications import notify_user as _notify
+                        await _notify(bot, escrow["seller_id"],
+                            f"\U0001f4b3 <b>Escrow Funded!</b>\n\n"
+                            f"Buyer funded escrow <code>{escrow_id}</code>.\n"
+                            f"Amount: <b>{fmt_number(amount)} SIDI</b>\n\n"
+                            f"Please deliver now. Type /escrow to manage {STAR}")
+                else:
+                    await message.answer(
+                        f"Could not fund escrow: {result.get('message', 'Error')} {STAR}",
+                        reply_markup=home_button_keyboard(),
+                    )
+
+            elif original_action == "bank_change_start":
+                set_pending_action(user_id, "settings_bank_name")
+                await message.answer(
+                    f"\u2705 <b>Verified!</b>\n\n"
+                    f"What bank do you use?\n\n"
+                    f"Type the bank name:\n"
+                    f"e.g. GTBank, Access, Kuda, OPay, FirstBank",
+                    reply_markup=cancel_keyboard(),
+                )
+
+            else:
+                await message.answer(f"Verified! {STAR}", reply_markup=home_keyboard())
+
+        else:
+            msg = otp_result.get("message", "Wrong code")
+            if otp_result.get("locked"):
+                # Check if flagged
+                failures = get_otp_failure_count(user_id)
+                if failures >= 5:
+                    from services.notifications import notify_admin as _admin_notify
+                    await _admin_notify(bot,
+                        f"\u26a0\ufe0f OTP ALERT: User {user_id} has {failures} "
+                        f"cumulative OTP failures. Account may be compromised.")
+                clear_pending_action(user_id)
+                await message.answer(
+                    f"\u26d4 <b>Code Expired</b>\n\n{msg}\n\n"
+                    f"Please try the action again {STAR}",
+                    reply_markup=home_keyboard(),
+                )
+            else:
+                await message.answer(f"\u274c {msg}", reply_markup=cancel_keyboard())
+            return
 
     # -- Escrow flows --
     elif action == "escrow_description":
