@@ -1,6 +1,6 @@
 # Sidicoin Telegram Bot
 
-Production-ready Telegram bot backend for Sidicoin -- Africa's leading cryptocurrency and instant money transfer platform built on TON blockchain.
+Production-ready Telegram bot for Sidicoin -- instant digital money transfers with zero fees, escrow protection, and merchant payments. Works in 13+ countries.
 
 **Domain:** `coin.sidihost.sbs`
 
@@ -10,9 +10,11 @@ Production-ready Telegram bot backend for Sidicoin -- Africa's leading cryptocur
 - **aiogram 3** (Telegram bot framework)
 - **Upstash Redis** REST API (all user data and balances)
 - **Groq AI** llama-3.3-70b-versatile (conversational assistant)
-- **Korapay API** (NGN payments: collections and disbursements)
+- **Korapay API** (NGN bank transfers: collections and disbursements)
+- **Flutterwave API** (international payments: cards, mobile money, global payouts)
 - **TON SDK** (wallet creation via tonsdk)
 - **AES-256-CBC** encryption for all private keys
+- **Telegram OTP** (6-digit verification codes for sensitive actions)
 - **APScheduler** for scheduled jobs
 
 ## Prerequisites
@@ -36,18 +38,38 @@ Before deploying, you need the following API keys and services:
 2. Complete business verification
 3. Get your Secret Key, Public Key, and Webhook Secret from the dashboard
 
-### 4. Upstash Redis
+### 4. Flutterwave API Keys (International Payments)
+
+Flutterwave handles card payments (Visa/Mastercard), mobile money (M-Pesa, MTN, Airtel), and international payouts across 13+ countries.
+
+1. Go to [dashboard.flutterwave.com](https://dashboard.flutterwave.com)
+2. Create an account and complete business verification
+3. Go to **Settings** > **API Keys**
+4. Copy your **Secret Key** and **Public Key**
+
+**Webhook setup (required):**
+
+5. Go to **Settings** > **Webhooks**
+6. Set Webhook URL to: `https://coin.sidihost.sbs/webhook/flutterwave`
+7. Enter any random secret string in the **Secret Hash** field (e.g. `my-super-secret-hash-2026`)
+8. Copy that exact string -- you will use it as `FLUTTERWAVE_WEBHOOK_HASH`
+
+The webhook hash is how Flutterwave signs requests so your server can verify they are genuine. If someone tries to send fake "payment successful" requests, they will be rejected because they won't have the correct hash.
+
+**Supported countries:** Nigeria, Kenya, Ghana, South Africa, Uganda, Tanzania, Rwanda, Cameroon, Ivory Coast, Egypt, UK, US, EU
+
+### 5. Upstash Redis
 
 1. Go to [upstash.com](https://upstash.com)
 2. Create a Redis database
 3. Copy the REST URL and REST Token
 
-### 5. TON API Key (Optional)
+### 6. TON API Key (Optional)
 
 1. Go to [toncenter.com](https://toncenter.com)
 2. Get an API key for mainnet
 
-### 6. Encryption Key
+### 7. Encryption Key
 
 Generate a strong random key for AES-256 encryption:
 
@@ -141,22 +163,24 @@ sudo systemctl reload nginx
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
-| `KORAPAY_SECRET_KEY` | Korapay API secret key |
-| `KORAPAY_PUBLIC_KEY` | Korapay API public key |
-| `KORAPAY_WEBHOOK_SECRET` | Korapay webhook HMAC secret |
-| `TON_API_KEY` | TON Center API key |
-| `GROQ_API_KEY` | Groq API key for AI assistant |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token |
-| `SIDI_PRICE_NGN` | SIDI price in Naira (default: 25) |
-| `SIDI_FEE_WALLET` | TON wallet address for collected fees |
-| `ADMIN_TELEGRAM_ID` | Admin's Telegram user ID |
-| `ENCRYPTION_KEY` | 64-char hex key for AES-256 encryption |
-| `WEBHOOK_BASE_URL` | `https://coin.sidihost.sbs` |
-| `PORT` | Server port (default: 8000) |
+| Variable | Required | Description | Where to get it |
+|----------|----------|-------------|-----------------|
+| `TELEGRAM_BOT_TOKEN` | Yes | Bot token | [@BotFather](https://t.me/BotFather) > `/newbot` |
+| `ADMIN_TELEGRAM_ID` | Yes | Your Telegram user ID | [@userinfobot](https://t.me/userinfobot) |
+| `KORAPAY_SECRET_KEY` | Yes | Korapay API secret key | [korapay.com](https://korapay.com) > Dashboard > API Keys |
+| `KORAPAY_PUBLIC_KEY` | Yes | Korapay API public key | Same as above |
+| `KORAPAY_WEBHOOK_SECRET` | Yes | Korapay webhook HMAC secret | Korapay Dashboard > Webhooks |
+| `FLUTTERWAVE_SECRET_KEY` | Yes | Flutterwave secret key | [dashboard.flutterwave.com](https://dashboard.flutterwave.com) > Settings > API Keys |
+| `FLUTTERWAVE_PUBLIC_KEY` | Yes | Flutterwave public key | Same as above |
+| `FLUTTERWAVE_WEBHOOK_HASH` | Yes | Webhook verification hash | Flutterwave Dashboard > Settings > Webhooks > Secret Hash |
+| `TON_API_KEY` | Optional | TON Center API key | [toncenter.com](https://toncenter.com) |
+| `GROQ_API_KEY` | Yes | Groq AI API key | [console.groq.com](https://console.groq.com) |
+| `UPSTASH_REDIS_REST_URL` | Yes | Redis REST endpoint | [upstash.com](https://upstash.com) > Database > REST API |
+| `UPSTASH_REDIS_REST_TOKEN` | Yes | Redis auth token | Same as above |
+| `SIDI_PRICE_NGN` | No | SIDI price in Naira (default: 25) | Set manually |
+| `ENCRYPTION_KEY` | Yes | 64-char hex key for AES-256 | `python3 -c "import secrets; print(secrets.token_hex(32))"` |
+| `WEBHOOK_BASE_URL` | Yes | Your domain URL | `https://coin.sidihost.sbs` |
+| `PORT` | No | Server port (default: 8000) | Set manually |
 
 ## Project Structure
 
@@ -170,12 +194,15 @@ bot/
 services/
   redis.py                 # Upstash Redis data layer
   ton.py                   # TON wallet creation
-  korapay.py               # Korapay payments API
+  korapay.py               # Korapay payments API (NGN)
+  flutterwave.py           # Flutterwave payments API (international)
+  otp.py                   # Telegram OTP verification system
   groq.py                  # Groq AI conversational assistant
   notifications.py         # Scheduled notification jobs
 routes/
   telegram.py              # POST /webhook/telegram
   korapay_webhook.py       # POST /webhook/korapay
+  flutterwave_webhook.py   # POST /webhook/flutterwave
   admin.py                 # GET /admin/* REST endpoints
 utils/
   encryption.py            # AES-256-CBC encryption
@@ -194,18 +221,21 @@ deploy/
 |---------|-------------|
 | `/start` | Create wallet, onboarding |
 | `/balance` | Check SIDI balance |
-| `/send` | Send SIDI to a user |
-| `/buy` | Buy SIDI with Naira |
-| `/sell` | Cash out SIDI to bank |
+| `/send` | Send SIDI to a user (zero fees) |
+| `/buy` | Buy SIDI with Naira or international payments (zero fees) |
+| `/sell` | Cash out SIDI to bank (zero fees, OTP verified) |
+| `/escrow` | Create/manage escrow trades for safe P2P |
 | `/history` | Transaction history |
 | `/contacts` | Saved contacts |
 | `/refer` | Referral link and earnings |
-| `/checkin` | Daily reward |
+| `/checkin` | Monthly check-in reward (10/month, progressive) |
+| `/merchant` | Business tools -- accept payments with 2% merchant fee |
+| `/support` | Donate SIDI to keep the platform free |
 | `/premium` | Upgrade to premium |
 | `/leaderboard` | Top holders |
 | `/price` | SIDI price and market data |
 | `/stats` | Platform statistics |
-| `/settings` | Account settings |
+| `/settings` | Account settings (OTP verified for bank changes) |
 | `/help` | Command reference |
 | `/about` | About Sidicoin |
 
@@ -221,6 +251,7 @@ deploy/
 | `/admin_broadcast message` | Broadcast to all |
 | `/admin_fees` | Total fees collected |
 | `/admin_pending` | Pending transactions |
+| `/admin_merchant_approve <user_id>` | Approve merchant application |
 
 ## Monitoring
 
@@ -256,12 +287,20 @@ curl -H "X-Admin-Id: YOUR_ADMIN_ID" https://coin.sidihost.sbs/admin/stats
 2. Check nginx: `sudo nginx -t && sudo systemctl status nginx`
 3. Re-set webhook: `curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://coin.sidihost.sbs/webhook/telegram"`
 
-### Payment issues
+### Payment issues (Korapay -- NGN)
 
 1. Check Korapay dashboard for payment status
 2. Verify `KORAPAY_WEBHOOK_SECRET` matches dashboard
 3. Check logs for webhook signature errors
 4. Ensure Korapay webhook URL is set to `https://coin.sidihost.sbs/webhook/korapay`
+
+### Payment issues (Flutterwave -- International)
+
+1. Check Flutterwave dashboard for payment status
+2. Verify `FLUTTERWAVE_WEBHOOK_HASH` matches what you set in Flutterwave Dashboard > Settings > Webhooks > Secret Hash
+3. Ensure Flutterwave webhook URL is set to `https://coin.sidihost.sbs/webhook/flutterwave`
+4. Check logs for `verif-hash mismatch` errors -- means the hash doesn't match
+5. For mobile money (M-Pesa, MTN), payments may take 30-60 seconds to confirm
 
 ### Redis connection errors
 
@@ -280,12 +319,24 @@ sudo systemctl reload nginx
 
 ## Security
 
+- **Telegram OTP** -- 6-digit codes sent via Telegram DM for cashouts, escrow funding, large sends (>5,000 SIDI), and bank detail changes. 5-min expiry, 3 attempts max, 60s cooldown between codes.
+- **Auto-flag** -- Accounts with 5+ cumulative OTP failures are auto-locked and admin is notified
+- **Session timeout** -- Users must re-verify after 30 minutes of inactivity on financial actions
 - All TON private keys are AES-256-CBC encrypted before Redis storage
 - 24-hour cashout hold for new users
 - Rate limiting: 10 transactions per hour per user
 - Large transfer warnings (>10,000 SIDI)
 - Suspicious activity alerts (>3 large transfers/hour)
-- HMAC-SHA512 webhook signature verification
+- HMAC-SHA512 webhook verification (Korapay)
+- Secret hash webhook verification (Flutterwave)
 - Banned user middleware on every request
 - Input sanitization on all user text
 - No raw errors exposed to users
+
+## Revenue Model
+
+Sidicoin is zero-fee for users. Revenue comes from:
+
+- **Merchant fees (2%)** -- Businesses apply for merchant status, generate payment links (`t.me/SidicoinBot?start=pay_ID_AMOUNT_REF`), and pay 2% on each transaction received. Customers pay nothing.
+- **Voluntary donations** -- Users can `/support` to donate SIDI
+- **Premium subscriptions** -- Higher limits and badge
