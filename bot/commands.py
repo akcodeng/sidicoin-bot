@@ -49,7 +49,7 @@ from services.otp import (
     send_otp_message, verify_otp, needs_otp, is_account_otp_flagged,
     get_otp_failure_count, LARGE_SEND_THRESHOLD,
 )
-from services.groq import get_ai_response, detect_intent
+from services.groq import get_ai_response, detect_intent, stream_ai_response
 from services.notifications import notify_user, notify_admin
 from utils.formatting import (
     fmt_number, sidi_to_naira, naira_to_sidi, fmt_sidi, fmt_naira,
@@ -3897,21 +3897,19 @@ async def handle_text_message(message: Message, bot: Bot):
             await _handle_pending_action(message, bot, action, data, sanitized)
             return
 
-        # No pending action -- use AI assistant
+        # No pending action -- use AI assistant with real-time streaming
         loading = await message.answer(f"{STAR} Sidi is thinking...")
 
         intent = detect_intent(sanitized)
-        if intent:
-            ai_response = await get_ai_response(sanitized, message.from_user.first_name or "User")
-            response_text = f"{ai_response}\n\n\U0001f4a1 Try: {intent}"
-        else:
-            ai_response = await get_ai_response(sanitized, message.from_user.first_name or "User")
-            response_text = ai_response
+        suffix = f"\U0001f4a1 Try: {intent}" if intent else ""
 
-        try:
-            await loading.edit_text(response_text, reply_markup=home_button_keyboard())
-        except TelegramBadRequest:
-            await message.answer(response_text, reply_markup=home_button_keyboard())
+        await stream_ai_response(
+            loading,
+            sanitized,
+            user_name=message.from_user.first_name or "User",
+            suffix=suffix,
+            reply_markup=home_button_keyboard(),
+        )
 
     except Exception as e:
         logger.error(f"text_message error: {e}", exc_info=True)
@@ -4631,8 +4629,9 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
     else:
         clear_pending_action(user_id)
         loading = await message.answer(f"{STAR} Sidi is thinking...")
-        ai_response = await get_ai_response(text, message.from_user.first_name or "User")
-        try:
-            await loading.edit_text(ai_response, reply_markup=home_button_keyboard())
-        except TelegramBadRequest:
-            pass
+        await stream_ai_response(
+            loading,
+            text,
+            user_name=message.from_user.first_name or "User",
+            reply_markup=home_button_keyboard(),
+        )

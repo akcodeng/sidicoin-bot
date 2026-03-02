@@ -1,12 +1,13 @@
 """
 Groq AI conversational assistant service.
 Uses llama-3.3-70b-versatile for intelligent, context-aware responses.
-Uses AsyncGroq to avoid blocking the event loop in production.
+Supports real-time streaming via Telegram editMessageText.
 """
 
 import os
 import logging
 import asyncio
+import time
 from functools import partial
 
 from groq import Groq
@@ -15,8 +16,12 @@ logger = logging.getLogger("sidicoin.groq")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-# Use sync client but run in thread executor to avoid blocking
 _sync_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# Minimum interval between edits (Telegram rate limit: ~1 edit/sec)
+STREAM_EDIT_INTERVAL = 1.0
+# Typing cursor shown during streaming
+STREAM_CURSOR = " \u25cf"
 
 SYSTEM_PROMPT = (
     "You are Sidi, the intelligent assistant for Sidicoin -- the digital money "
@@ -99,6 +104,123 @@ async def get_ai_response(user_message: str, user_name: str = "User") -> str:
         "I'm having a moment — please try again shortly! "
         "In the meantime, try /help for all commands ✦"
     )
+
+
+def _sync_stream(messages: list[dict]):
+    """Synchronous Groq streaming call -- yields token chunks."""
+    stream = _sync_client.chat.completions.create(
+        messages=messages,
+        model="llama-3.3-70b-versatile",
+        temperature=0.7,
+        max_tokens=300,
+        top_p=0.9,
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if delta and delta.content:
+            yield delta.content
+
+
+async def stream_ai_response(message, user_message: str, user_name: str = "User",
+                              suffix: str = "", reply_markup=None):
+    """
+    Stream an AI response in real time by editing the Telegram message.
+
+    1. Sends initial "thinking..." placeholder
+    2. Streams tokens from Groq
+    3. Edits the message every ~1 second with accumulated text + cursor
+    4. Final edit removes cursor and adds suffix/keyboard
+
+    Args:
+        message: aiogram Message object (the loading message to edit)
+        user_message: The user's question
+        user_name: Display name for context
+        suffix: Optional text to append after the AI response (e.g. intent hint)
+        reply_markup: Keyboard to attach to the final message
+    """
+    from aiogram.exceptions import TelegramBadRequest
+
+    if not _sync_client:
+        fallback = (
+            "I'm Sidi, your Sidicoin assistant! \u2726 "
+            "Try /help to see all available commands, "
+            "or /send to transfer money to someone."
+        )
+        final_text = f"{fallback}\n\n{suffix}" if suffix else fallback
+        try:
+            await message.edit_text(final_text, reply_markup=reply_markup)
+        except TelegramBadRequest:
+            pass
+        return
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"[User: {user_name}] {user_message}"},
+    ]
+
+    accumulated = ""
+    last_edit_time = 0.0
+    last_edit_text = ""
+
+    try:
+        loop = asyncio.get_event_loop()
+
+        # Run the sync stream generator in a thread, collecting chunks via a queue
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel = object()
+
+        def _producer():
+            try:
+                for token in _sync_stream(messages):
+                    loop.call_soon_threadsafe(queue.put_nowait, token)
+            except Exception as e:
+                logger.error(f"Groq stream error: {e}")
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        asyncio.get_event_loop().run_in_executor(None, _producer)
+
+        while True:
+            token = await queue.get()
+            if token is sentinel:
+                break
+
+            accumulated += token
+            now = time.monotonic()
+
+            # Edit at most once per STREAM_EDIT_INTERVAL
+            if now - last_edit_time >= STREAM_EDIT_INTERVAL:
+                display_text = accumulated.strip() + STREAM_CURSOR
+                if display_text != last_edit_text and len(display_text) > 2:
+                    try:
+                        await message.edit_text(display_text)
+                        last_edit_text = display_text
+                        last_edit_time = now
+                    except TelegramBadRequest:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"Stream edit error: {e}")
+
+    except Exception as e:
+        logger.error(f"Streaming error: {e}", exc_info=True)
+        if not accumulated:
+            accumulated = (
+                "I'm having a moment -- please try again shortly! "
+                "In the meantime, try /help for all commands \u2726"
+            )
+
+    # Final edit: remove cursor, add suffix and keyboard
+    final_text = accumulated.strip()
+    if suffix:
+        final_text = f"{final_text}\n\n{suffix}"
+    if not final_text:
+        final_text = "I'm here to help! Try /help \u2726"
+
+    try:
+        await message.edit_text(final_text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        pass
 
 
 def detect_intent(message: str) -> str:
