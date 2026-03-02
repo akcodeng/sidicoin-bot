@@ -3399,36 +3399,65 @@ async def _execute_sell(message: Message, bot: Bot, user_id: int, data: dict):
             return
 
         reference = generate_tx_reference()
-        payout_result = process_payout(
+        payout_result = await process_payout(
+            reference=reference,
+            amount=net_ngn,
             bank_code=bank_code,
             account_number=bank_account,
-            amount_ngn=net_ngn,
-            reference=reference,
-            narration=f"Sidicoin cashout - {account_name}",
+            account_name=account_name,
         )
 
         now = int(time.time())
+
+        if not payout_result.get("success"):
+            # Payout failed -- refund the user
+            update_balance(user_id, total_deduction)
+            add_transaction(user_id, {
+                "type": "sell_failed", "amount": sidi_amount,
+                "description": f"Cashout failed - {payout_result.get('message', 'Error')}",
+                "timestamp": now, "reference": reference,
+                "status": "failed",
+            })
+            await message.answer(
+                f"\u274c <b>Cashout Failed</b>\n\n"
+                f"Your {fmt_number(sidi_amount)} SIDI has been refunded.\n"
+                f"Reason: {payout_result.get('message', 'Bank error')}\n\n"
+                f"Please check your bank details and try again {STAR}",
+                reply_markup=home_keyboard(),
+            )
+            clear_pending_action(user_id)
+            return
+
         add_transaction(user_id, {
             "type": "sell", "amount": sidi_amount,
             "ngn_amount": net_ngn, "fee_sidi": fee_sidi,
             "bank_name": bank_name, "bank_account": bank_account,
-            "description": f"Cashout to {bank_name} {bank_account}",
+            "description": f"Cashout to {bank_name}",
             "timestamp": now, "reference": reference,
             "status": "processing",
         })
 
-        unlock_referral_earnings_on_tx(user_id)
+        # Track total sold
         user = get_user(user_id)
+        user["total_sold_ngn"] = float(user.get("total_sold_ngn", 0)) + net_ngn
+        save_user(user_id, user)
+
+        unlock_referral_earnings_on_tx(user_id)
         new_balance = float(user.get("sidi_balance", 0))
 
-        receipt = generate_receipt("Cashout", user.get("username", ""), bank_name, sidi_amount, fee_sidi, reference)
         await message.answer(
             f"\u2705 <b>Cashout Processing!</b>\n\n"
-            f"{receipt}\n\n"
-            f"  \U0001f3e6 {bank_name} - {bank_account}\n"
-            f"  \U0001f464 {_safe_escape(account_name)}\n"
-            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
-            f"You'll receive {fmt_naira(net_ngn)} shortly {STAR}",
+            f"{DIVIDER}\n\n"
+            f"  Amount     {fmt_number(sidi_amount)} SIDI\n"
+            f"  You get    {fmt_naira(net_ngn)}\n"
+            f"  Ref        <code>{reference}</code>\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  Bank       {_safe_escape(bank_name)}\n"
+            f"  Account    {bank_account}\n"
+            f"  Name       {_safe_escape(account_name)}\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+            f"  Funds will arrive in your account shortly {STAR}",
             reply_markup=home_keyboard(),
         )
         clear_pending_action(user_id)
@@ -3479,25 +3508,35 @@ async def _execute_send(message: Message, bot: Bot, user_id: int, data: dict):
 
         clear_pending_action(user_id)
         naira = sidi_to_naira(amount)
-        receipt = generate_receipt("Transfer", sender_username, recipient_username, amount, 0, reference)
 
         sender = get_user(user_id)
         new_balance = float(sender.get("sidi_balance", 0))
 
         text = (
             f"\u2705 <b>Transfer Complete!</b>\n\n"
-            f"{receipt}\n\n"
-            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b> {STAR}"
+            f"{DIVIDER}\n\n"
+            f"  To         @{recipient_username}\n"
+            f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n"
+            f"  Value      {fmt_naira(naira)}\n"
+            f"  Fee        Free\n"
+            f"  Ref        <code>{reference}</code>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Balance    <b>{fmt_number(new_balance)} SIDI</b> {STAR}"
         )
         await message.answer(text, reply_markup=after_send_keyboard())
 
         # Notify recipient
+        recipient = get_user(recipient_id)
+        r_balance = float(recipient.get("sidi_balance", 0)) if recipient else 0
         await notify_user(
             bot, recipient_id,
-            f"\U0001f4b8 <b>You received money!</b>\n\n"
-            f"  From:   @{sender_username}\n"
-            f"  Amount: <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n\n"
-            f"  Your balance has been updated {STAR}",
+            f"\U0001f4b0 <b>You Received Money!</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  From       @{sender_username}\n"
+            f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n"
+            f"  Value      {fmt_naira(naira)}\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Balance    <b>{fmt_number(r_balance)} SIDI</b> {STAR}",
         )
 
     except Exception as e:
@@ -3520,19 +3559,31 @@ async def cmd_game(message: Message):
             return
 
         balance = float(user.get("sidi_balance", 0))
+        games_played = int(user.get("games_played", 0))
+        games_won = int(user.get("games_won", 0))
+
+        stats_line = ""
+        if games_played > 0:
+            win_rate = (games_won / games_played) * 100
+            stats_line = (
+                f"\n{THIN_DIVIDER}\n\n"
+                f"  Played     {games_played}\n"
+                f"  Won        {games_won}\n"
+                f"  Win rate   {win_rate:.0f}%\n"
+            )
+
         text = (
             f"\U0001f3ae <b>Sidicoin Games</b>\n\n"
-            f"Play to win SIDI! Choose a game:\n\n"
+            f"Play to win SIDI! Tap <b>Play Now</b> to\n"
+            f"open the full game experience.\n\n"
             f"{DIVIDER}\n\n"
-            f"  \U0001fa99 <b>Coin Flip</b>\n"
-            f"     Heads or tails? 2x your bet!\n\n"
-            f"  \U0001f3b2 <b>Dice Roll</b>\n"
-            f"     Guess the number. 5x payout!\n\n"
-            f"  \U0001f3b0 <b>Lucky Number</b>\n"
-            f"     Pick 1-10. Match for 8x!\n\n"
+            f"  \U0001fa99 <b>Coin Flip</b>       2x payout\n"
+            f"  \U0001f3b2 <b>Dice Roll</b>       2x payout\n"
+            f"  \u2b50 <b>Lucky Number</b>   4.5x payout\n\n"
             f"{DIVIDER}\n\n"
-            f"  Your balance: <b>{fmt_number(balance)} SIDI</b>\n"
-            f"  Min bet: 1 SIDI | Max bet: 50 SIDI"
+            f"  Balance    <b>{fmt_number(balance)} SIDI</b>\n"
+            f"  Max bet    500 SIDI"
+            f"{stats_line}"
         )
         await message.answer(text, reply_markup=game_menu_keyboard())
 

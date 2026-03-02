@@ -4,7 +4,8 @@ Every message must end with relevant action buttons.
 Uses descriptive, branded button labels.
 """
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 
 # =====================================================================
@@ -353,7 +354,15 @@ def contacts_keyboard(contacts: list[dict]) -> InlineKeyboardMarkup:
 # =====================================================================
 
 def game_menu_keyboard() -> InlineKeyboardMarkup:
+    base_url = os.getenv("WEBHOOK_BASE_URL", "https://coin.sidihost.sbs")
+    game_url = f"{base_url}/game"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="\U0001f3ae Play Now",
+                web_app=WebAppInfo(url=game_url),
+            ),
+        ],
         [
             InlineKeyboardButton(text="\U0001fa99 Coin Flip", callback_data="game_coinflip"),
             InlineKeyboardButton(text="\U0001f3b2 Dice Roll", callback_data="game_dice"),
