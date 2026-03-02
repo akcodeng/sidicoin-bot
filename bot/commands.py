@@ -41,7 +41,7 @@ from services.korapay import (
     create_bank_transfer_charge, verify_bank_account,
     process_payout, get_bank_code, COMMON_BANKS,
 )
-from services.flutterwave import (
+from services.paystack import (
     create_payment_link, get_country_config, detect_country_from_language,
     convert_to_ngn, convert_from_ngn, COUNTRY_CONFIG,
 )

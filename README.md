@@ -11,7 +11,7 @@ Production-ready Telegram bot for Sidicoin -- instant digital money transfers wi
 - **Upstash Redis** REST API (all user data and balances)
 - **Groq AI** llama-3.3-70b-versatile (conversational assistant)
 - **Korapay API** (NGN bank transfers: collections and disbursements)
-- **Flutterwave API** (international payments: cards, mobile money, global payouts)
+- **Paystack API** (international payments: cards, mobile money, bank transfers)
 - **TON SDK** (wallet creation via tonsdk)
 - **AES-256-CBC** encryption for all private keys
 - **Telegram OTP** (6-digit verification codes for sensitive actions)
@@ -38,25 +38,29 @@ Before deploying, you need the following API keys and services:
 2. Complete business verification
 3. Get your Secret Key, Public Key, and Webhook Secret from the dashboard
 
-### 4. Flutterwave API Keys (International Payments)
+### 4. Paystack API Keys (International Payments)
 
-Flutterwave handles card payments (Visa/Mastercard), mobile money (M-Pesa, MTN, Airtel), and international payouts across 13+ countries.
+Paystack handles card payments (Visa/Mastercard), bank transfers, mobile money (Ghana, Kenya), and payouts. Owned by Stripe -- very reliable and easy to get live mode approved.
 
-1. Go to [dashboard.flutterwave.com](https://dashboard.flutterwave.com)
+1. Go to [dashboard.paystack.com](https://dashboard.paystack.com)
 2. Create an account and complete business verification
-3. Go to **Settings** > **API Keys**
-4. Copy your **Secret Key** and **Public Key**
+3. Go to **Settings** > **API Keys & Webhooks**
+4. Copy your **Secret Key** (starts with `sk_live_`) and **Public Key** (starts with `pk_live_`)
 
 **Webhook setup (required):**
 
-5. Go to **Settings** > **Webhooks**
-6. Set Webhook URL to: `https://coin.sidihost.sbs/webhook/flutterwave`
-7. Enter any random secret string in the **Secret Hash** field (e.g. `my-super-secret-hash-2026`)
-8. Copy that exact string -- you will use it as `FLUTTERWAVE_WEBHOOK_HASH`
+5. In the same Settings page, find **Webhook URL**
+6. Set it to: `https://coin.sidihost.sbs/webhook/paystack`
+7. Save
 
-The webhook hash is how Flutterwave signs requests so your server can verify they are genuine. If someone tries to send fake "payment successful" requests, they will be rejected because they won't have the correct hash.
+Paystack verifies webhooks using HMAC-SHA512 -- it signs every webhook request with your Secret Key. Your server computes the same signature and compares. No separate webhook secret needed -- it uses your existing Secret Key.
 
-**Supported countries:** Nigeria, Kenya, Ghana, South Africa, Uganda, Tanzania, Rwanda, Cameroon, Ivory Coast, Egypt, UK, US, EU
+**Supported countries:** Nigeria (cards, bank transfer, USSD), Ghana (cards, mobile money), Kenya (cards, mobile money), South Africa (cards)
+
+**Test vs Live mode:**
+- Test keys start with `sk_test_` / `pk_test_`
+- Live keys start with `sk_live_` / `pk_live_`
+- To go live: complete business verification on Paystack dashboard, then switch to live keys
 
 ### 5. Upstash Redis
 
@@ -170,9 +174,8 @@ sudo systemctl reload nginx
 | `KORAPAY_SECRET_KEY` | Yes | Korapay API secret key | [korapay.com](https://korapay.com) > Dashboard > API Keys |
 | `KORAPAY_PUBLIC_KEY` | Yes | Korapay API public key | Same as above |
 | `KORAPAY_WEBHOOK_SECRET` | Yes | Korapay webhook HMAC secret | Korapay Dashboard > Webhooks |
-| `FLUTTERWAVE_SECRET_KEY` | Yes | Flutterwave secret key | [dashboard.flutterwave.com](https://dashboard.flutterwave.com) > Settings > API Keys |
-| `FLUTTERWAVE_PUBLIC_KEY` | Yes | Flutterwave public key | Same as above |
-| `FLUTTERWAVE_WEBHOOK_HASH` | Yes | Webhook verification hash | Flutterwave Dashboard > Settings > Webhooks > Secret Hash |
+| `PAYSTACK_SECRET_KEY` | Yes | Paystack secret key (starts with `sk_live_`) | [dashboard.paystack.com](https://dashboard.paystack.com) > Settings > API Keys |
+| `PAYSTACK_PUBLIC_KEY` | Yes | Paystack public key (starts with `pk_live_`) | Same as above |
 | `TON_API_KEY` | Optional | TON Center API key | [toncenter.com](https://toncenter.com) |
 | `GROQ_API_KEY` | Yes | Groq AI API key | [console.groq.com](https://console.groq.com) |
 | `UPSTASH_REDIS_REST_URL` | Yes | Redis REST endpoint | [upstash.com](https://upstash.com) > Database > REST API |
@@ -195,14 +198,14 @@ services/
   redis.py                 # Upstash Redis data layer
   ton.py                   # TON wallet creation
   korapay.py               # Korapay payments API (NGN)
-  flutterwave.py           # Flutterwave payments API (international)
+  paystack.py              # Paystack payments API (international)
   otp.py                   # Telegram OTP verification system
   groq.py                  # Groq AI conversational assistant
   notifications.py         # Scheduled notification jobs
 routes/
   telegram.py              # POST /webhook/telegram
   korapay_webhook.py       # POST /webhook/korapay
-  flutterwave_webhook.py   # POST /webhook/flutterwave
+  paystack_webhook.py      # POST /webhook/paystack
   admin.py                 # GET /admin/* REST endpoints
 utils/
   encryption.py            # AES-256-CBC encryption
@@ -294,13 +297,14 @@ curl -H "X-Admin-Id: YOUR_ADMIN_ID" https://coin.sidihost.sbs/admin/stats
 3. Check logs for webhook signature errors
 4. Ensure Korapay webhook URL is set to `https://coin.sidihost.sbs/webhook/korapay`
 
-### Payment issues (Flutterwave -- International)
+### Payment issues (Paystack -- International)
 
-1. Check Flutterwave dashboard for payment status
-2. Verify `FLUTTERWAVE_WEBHOOK_HASH` matches what you set in Flutterwave Dashboard > Settings > Webhooks > Secret Hash
-3. Ensure Flutterwave webhook URL is set to `https://coin.sidihost.sbs/webhook/flutterwave`
-4. Check logs for `verif-hash mismatch` errors -- means the hash doesn't match
-5. For mobile money (M-Pesa, MTN), payments may take 30-60 seconds to confirm
+1. Check Paystack dashboard for payment status
+2. Verify `PAYSTACK_SECRET_KEY` is your live key (starts with `sk_live_`), not test key
+3. Ensure Paystack webhook URL is set to `https://coin.sidihost.sbs/webhook/paystack`
+4. Check logs for `invalid signature` errors -- means the secret key doesn't match
+5. For mobile money (Ghana, Kenya), payments may take 30-60 seconds to confirm
+6. If stuck on test mode, complete business verification on Paystack dashboard to go live
 
 ### Redis connection errors
 
@@ -328,7 +332,7 @@ sudo systemctl reload nginx
 - Large transfer warnings (>10,000 SIDI)
 - Suspicious activity alerts (>3 large transfers/hour)
 - HMAC-SHA512 webhook verification (Korapay)
-- Secret hash webhook verification (Flutterwave)
+- HMAC-SHA512 webhook verification (Paystack)
 - Banned user middleware on every request
 - Input sanitization on all user text
 - No raw errors exposed to users
