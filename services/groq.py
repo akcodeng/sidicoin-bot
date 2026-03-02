@@ -59,6 +59,18 @@ SYSTEM_PROMPT = (
 )
 
 
+GROUP_SYSTEM_PROMPT = (
+    "You are Sidi, the AI assistant for Sidicoin -- a digital money platform on Telegram. "
+    "You are in a GROUP CHAT. Be concise and helpful. "
+    "Max 2 sentences. Don't be spammy. "
+    "SIDI is digital money (like mobile money), not crypto. "
+    "Group commands: /tip @user amount, /giveaway amount winners, /rain amount, "
+    "/verify, /whois @user, /pick. "
+    "Private commands: /send, /buy, /sell, /balance, /escrow, /game. "
+    "Be warm, smart, and helpful. Use simple language."
+)
+
+
 def _sync_chat(messages: list[dict]) -> str:
     """Synchronous Groq API call (runs in thread executor)."""
     chat_completion = _sync_client.chat.completions.create(
@@ -123,7 +135,8 @@ def _sync_stream(messages: list[dict]):
 
 
 async def stream_ai_response(message, user_message: str, user_name: str = "User",
-                              suffix: str = "", reply_markup=None):
+                              suffix: str = "", reply_markup=None,
+                              group_mode: bool = False):
     """
     Stream an AI response in real time by editing the Telegram message.
 
@@ -138,6 +151,7 @@ async def stream_ai_response(message, user_message: str, user_name: str = "User"
         user_name: Display name for context
         suffix: Optional text to append after the AI response (e.g. intent hint)
         reply_markup: Keyboard to attach to the final message
+        group_mode: Use shorter group-aware prompt
     """
     from aiogram.exceptions import TelegramBadRequest
 
@@ -154,8 +168,9 @@ async def stream_ai_response(message, user_message: str, user_name: str = "User"
             pass
         return
 
+    prompt = GROUP_SYSTEM_PROMPT if group_mode else SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": prompt},
         {"role": "user", "content": f"[User: {user_name}] {user_message}"},
     ]
 

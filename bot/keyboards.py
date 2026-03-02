@@ -4,7 +4,8 @@ Every message must end with relevant action buttons.
 Uses descriptive, branded button labels.
 """
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 
 # =====================================================================
@@ -353,7 +354,15 @@ def contacts_keyboard(contacts: list[dict]) -> InlineKeyboardMarkup:
 # =====================================================================
 
 def game_menu_keyboard() -> InlineKeyboardMarkup:
+    base_url = os.getenv("WEBHOOK_BASE_URL", "https://coin.sidihost.sbs")
+    game_url = f"{base_url}/game"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="\U0001f3ae Play Now",
+                web_app=WebAppInfo(url=game_url),
+            ),
+        ],
         [
             InlineKeyboardButton(text="\U0001fa99 Coin Flip", callback_data="game_coinflip"),
             InlineKeyboardButton(text="\U0001f3b2 Dice Roll", callback_data="game_dice"),
@@ -599,4 +608,44 @@ def merchant_pay_confirm_keyboard(merchant_id: str, amount: float, ref: str) -> 
             callback_data=f"merchant_pay_{merchant_id}_{amount}_{ref}",
         )],
         [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
+    ])
+
+
+# =====================================================================
+#  GROUP KEYBOARDS
+# =====================================================================
+
+def giveaway_join_keyboard(giveaway_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\U0001f389 Join Giveaway",
+            callback_data=f"giveaway_join_{giveaway_id}",
+        )],
+    ])
+
+
+def giveaway_end_keyboard(giveaway_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\U0001f3c1 End & Pick Winners",
+            callback_data=f"giveaway_end_{giveaway_id}",
+        )],
+    ])
+
+
+def verify_start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\u2705 Start Verification",
+            callback_data="verify_start",
+        )],
+    ])
+
+
+def whois_tip_keyboard(username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"\U0001f4b0 Tip @{username}",
+            url=f"https://t.me/SidicoinBot?start=tip_{username}",
+        )],
     ])

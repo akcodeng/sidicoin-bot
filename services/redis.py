@@ -1188,6 +1188,122 @@ def refund_escrow(escrow_id: str) -> dict:
     return {"success": True, "amount": amount}
 
 
+# =====================================================================
+#  GROUP FEATURES
+# =====================================================================
+
+def track_group_member_activity(group_id: str, user_id: str) -> None:
+    """Track a member's activity in a group using a sorted set (score = timestamp)."""
+    try:
+        key = f"group_active:{group_id}"
+        redis.zadd(key, {str(user_id): int(time.time())})
+        redis.expire(key, 86400)  # Keep for 24 hours
+    except Exception as e:
+        logger.error(f"Track group activity error: {e}")
+
+
+def get_active_group_members(group_id: str, minutes: int = 30) -> list[str]:
+    """Get user IDs active in a group within the last N minutes."""
+    try:
+        key = f"group_active:{group_id}"
+        cutoff = int(time.time()) - (minutes * 60)
+        members = redis.zrangebyscore(key, cutoff, "+inf")
+        return [str(m) for m in members] if members else []
+    except Exception as e:
+        logger.error(f"Get active group members error: {e}")
+        return []
+
+
+def create_giveaway(giveaway_id: str, data: dict) -> None:
+    """Create a giveaway and store its data."""
+    try:
+        key = f"giveaway:{giveaway_id}"
+        redis.set(key, json.dumps(data))
+        redis.expire(key, 86400)  # 24 hour max lifetime
+        redis.sadd("active_giveaways", giveaway_id)
+    except Exception as e:
+        logger.error(f"Create giveaway error: {e}")
+
+
+def get_giveaway(giveaway_id: str) -> dict:
+    """Retrieve giveaway data."""
+    try:
+        key = f"giveaway:{giveaway_id}"
+        raw = redis.get(key)
+        if raw:
+            return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as e:
+        logger.error(f"Get giveaway error: {e}")
+    return {}
+
+
+def update_giveaway(giveaway_id: str, data: dict) -> None:
+    """Update giveaway data."""
+    try:
+        key = f"giveaway:{giveaway_id}"
+        redis.set(key, json.dumps(data))
+    except Exception as e:
+        logger.error(f"Update giveaway error: {e}")
+
+
+def join_giveaway(giveaway_id: str, user_id: str) -> bool:
+    """Add a user to a giveaway's participant set. Returns True if newly added."""
+    try:
+        key = f"giveaway_participants:{giveaway_id}"
+        result = redis.sadd(key, str(user_id))
+        redis.expire(key, 86400)
+        return result == 1
+    except Exception as e:
+        logger.error(f"Join giveaway error: {e}")
+        return False
+
+
+def get_giveaway_participants(giveaway_id: str) -> list[str]:
+    """Get all participant user IDs for a giveaway."""
+    try:
+        key = f"giveaway_participants:{giveaway_id}"
+        members = redis.smembers(key)
+        return [str(m) for m in members] if members else []
+    except Exception as e:
+        logger.error(f"Get giveaway participants error: {e}")
+        return []
+
+
+def end_giveaway(giveaway_id: str) -> None:
+    """Mark a giveaway as ended and clean up."""
+    try:
+        giveaway = get_giveaway(giveaway_id)
+        if giveaway:
+            giveaway["status"] = "ended"
+            giveaway["ended_at"] = int(time.time())
+            update_giveaway(giveaway_id, giveaway)
+        redis.srem("active_giveaways", giveaway_id)
+    except Exception as e:
+        logger.error(f"End giveaway error: {e}")
+
+
+def set_verification_status(user_id: str, passed: bool, score: int = 0) -> None:
+    """Set a user's verification status."""
+    user = get_user(user_id)
+    if user:
+        user["verified"] = passed
+        user["verified_at"] = int(time.time()) if passed else 0
+        user["verification_score"] = score
+        save_user(user_id, user)
+
+
+def get_verification_status(user_id: str) -> dict:
+    """Get a user's verification status."""
+    user = get_user(user_id)
+    if not user:
+        return {"verified": False, "score": 0}
+    return {
+        "verified": user.get("verified", False),
+        "verified_at": user.get("verified_at", 0),
+        "score": user.get("verification_score", 0),
+    }
+
+
 def get_user_escrows(telegram_id: str, status_filter: str = "") -> list[dict]:
     """Get all escrows where user is buyer or seller."""
     uid = str(telegram_id)

@@ -8,6 +8,7 @@ import logging
 from aiogram import Dispatcher
 
 from bot.commands import router as commands_router
+from bot.group_commands import group_router
 
 logger = logging.getLogger("sidicoin.handler")
 
@@ -15,8 +16,10 @@ logger = logging.getLogger("sidicoin.handler")
 def register_all_handlers(dp: Dispatcher) -> None:
     """
     Register all bot routers with the dispatcher.
-    Order matters — commands first, then callbacks, then catch-all text.
-    The commands router already contains all handlers in the correct order.
+    Order matters:
+      1. Private commands router (handles DM commands, callbacks, text)
+      2. Group router (handles group tips, giveaways, rain, AI mentions)
     """
     dp.include_router(commands_router)
-    logger.info("All bot handlers registered successfully")
+    dp.include_router(group_router)
+    logger.info("All bot handlers registered (private + group)")
