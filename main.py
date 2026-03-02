@@ -50,6 +50,9 @@ def setup_scheduler():
         send_premium_expiry_alerts,
         send_reengagement_messages,
         send_streak_warnings,
+        send_low_balance_reminders,
+        send_game_reminders,
+        send_escrow_expiry_alerts,
         reset_daily_stats,
     )
 
@@ -86,6 +89,33 @@ def setup_scheduler():
         IntervalTrigger(hours=6),
         args=[bot],
         id="streak_warnings",
+        replace_existing=True,
+    )
+
+    # Every day at 11am WAT — low balance reminders
+    scheduler.add_job(
+        send_low_balance_reminders,
+        CronTrigger(hour=11, minute=0),
+        args=[bot],
+        id="low_balance_reminders",
+        replace_existing=True,
+    )
+
+    # Every day at 2pm WAT — game reminders for active gamers
+    scheduler.add_job(
+        send_game_reminders,
+        CronTrigger(hour=14, minute=0),
+        args=[bot],
+        id="game_reminders",
+        replace_existing=True,
+    )
+
+    # Every 6 hours — escrow expiry and delivery alerts
+    scheduler.add_job(
+        send_escrow_expiry_alerts,
+        IntervalTrigger(hours=6),
+        args=[bot],
+        id="escrow_expiry_alerts",
         replace_existing=True,
     )
 

@@ -208,6 +208,136 @@ async def send_streak_warnings(bot: Bot):
             logger.error(f"Streak warning error for {uid}: {e}")
 
 
+async def send_low_balance_reminders(bot: Bot):
+    """
+    Remind users with low balance who haven't topped up in 7+ days.
+    Runs daily at 11am WAT.
+    """
+    logger.info("Running low-balance reminder job")
+    now = int(time.time())
+    seven_days_ago = now - (7 * 86400)
+    user_ids = get_all_user_ids()
+    sent_count = 0
+
+    for uid in user_ids:
+        try:
+            user = get_user(uid)
+            if not user or user.get("is_banned"):
+                continue
+
+            balance = float(user.get("sidi_balance", 0))
+            last_buy = int(user.get("last_buy_timestamp", 0))
+            name = user.get("full_name", "there")
+
+            # Low balance: < 10 SIDI and haven't bought in 7+ days
+            if balance < 10 and (last_buy == 0 or last_buy < seven_days_ago):
+                # Don't send if we sent a re-engagement recently
+                last_active = int(user.get("last_active", 0))
+                if last_active > seven_days_ago:
+                    # They're active but low balance
+                    text = (
+                        f"{name}, your balance is low "
+                        f"(<b>{fmt_number(balance)} SIDI</b>).\n\n"
+                        f"Top up with /buy -- zero fees, instant credit.\n"
+                        f"You can also earn free SIDI with /checkin \u2726"
+                    )
+                    if await _safe_send(bot, uid, text):
+                        sent_count += 1
+
+        except Exception as e:
+            logger.error(f"Low balance reminder error for {uid}: {e}")
+
+    logger.info(f"Sent {sent_count} low-balance reminders")
+
+
+async def send_game_reminders(bot: Bot):
+    """
+    Remind active gamers about games. Runs at 2pm WAT.
+    """
+    logger.info("Running game reminder job")
+    now = int(time.time())
+    user_ids = get_all_user_ids()
+    sent_count = 0
+
+    for uid in user_ids:
+        try:
+            user = get_user(uid)
+            if not user or user.get("is_banned"):
+                continue
+
+            games_played = int(user.get("games_played", 0))
+            balance = float(user.get("sidi_balance", 0))
+
+            # Only remind users who have played before and have balance
+            if games_played >= 3 and balance >= 5:
+                games_won = int(user.get("games_won", 0))
+                name = user.get("full_name", "there")
+
+                text = (
+                    f"{name}, ready for another round?\n\n"
+                    f"Your stats: <b>{games_won}/{games_played}</b> wins.\n"
+                    f"Type /game to play \u2726"
+                )
+
+                if await _safe_send(bot, uid, text):
+                    sent_count += 1
+
+        except Exception as e:
+            logger.error(f"Game reminder error for {uid}: {e}")
+
+    logger.info(f"Sent {sent_count} game reminders")
+
+
+async def send_escrow_expiry_alerts(bot: Bot):
+    """
+    Alert users about escrows that are about to expire or have been pending too long.
+    Runs every 6 hours.
+    """
+    logger.info("Running escrow expiry alert job")
+    now = int(time.time())
+    user_ids = get_all_user_ids()
+
+    from services.redis import get_user_escrows, get_escrow
+
+    for uid in user_ids:
+        try:
+            escrows = get_user_escrows(uid)
+            for esc in escrows:
+                status = esc.get("status", "")
+                created = int(esc.get("created_at", 0))
+                age_hours = (now - created) / 3600
+
+                if status == "pending" and age_hours > 24:
+                    # Pending for over 24hrs, remind buyer to fund
+                    buyer_id = esc.get("buyer_id", "")
+                    if buyer_id:
+                        esc_id = esc.get("escrow_id", "")
+                        amount = float(esc.get("amount_sidi", 0))
+                        await _safe_send(
+                            bot, buyer_id,
+                            f"Your escrow <code>{esc_id}</code> "
+                            f"(<b>{fmt_number(amount)} SIDI</b>) is "
+                            f"still pending. Fund it to proceed.\n\n"
+                            f"Type /escrow to manage \u2726"
+                        )
+
+                elif status == "funded" and age_hours > 48:
+                    # Funded for over 48hrs, remind seller to deliver
+                    seller_id = esc.get("seller_id", "")
+                    if seller_id:
+                        esc_id = esc.get("escrow_id", "")
+                        await _safe_send(
+                            bot, seller_id,
+                            f"Escrow <code>{esc_id}</code> has been "
+                            f"funded for over 48 hours. Please deliver "
+                            f"to avoid a dispute.\n\n"
+                            f"Type /escrow to manage \u2726"
+                        )
+
+        except Exception as e:
+            logger.error(f"Escrow expiry alert error for {uid}: {e}")
+
+
 async def notify_user(bot: Bot, telegram_id: int | str, text: str, reply_markup=None) -> bool:
     """Send a notification to a specific user."""
     return await _safe_send(bot, str(telegram_id), text, reply_markup=reply_markup)

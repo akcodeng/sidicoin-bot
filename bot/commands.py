@@ -207,15 +207,14 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 
             text = (
                 f"{STAR} <b>{greeting}</b>\n\n"
-                f"Welcome back to Sidicoin.\n\n"
-                f"{DIVIDER}\n"
-                f"  <b>Your Wallet</b>\n\n"
-                f"  \U0001f48e  <b>{fmt_number(balance)} SIDI</b>\n"
-                f"  \U0001f4b5  {fmt_naira(naira)}\n"
-                f"  \U0001f3c6  {badge} Account\n"
-                f"  \U0001f4ca  {fmt_number(remaining)} SIDI daily limit left\n"
                 f"{DIVIDER}\n\n"
-                f"What would you like to do? {STAR}"
+                f"  <b>{fmt_number(balance)} SIDI</b>\n"
+                f"  {fmt_naira(naira)}\n\n"
+                f"{THIN_DIVIDER}\n\n"
+                f"  Status     {badge}\n"
+                f"  Daily      {fmt_number(remaining)} SIDI left\n\n"
+                f"{DIVIDER}\n\n"
+                f"  What would you like to do? {STAR}"
             )
             await message.answer(text, reply_markup=home_keyboard())
             return
@@ -315,19 +314,19 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         country_name = country_config.get("name", "your country")
 
         welcome_text = (
-            f"{STAR} <b>Welcome to Sidicoin, {_safe_escape(first_name)}</b>\n\n"
-            f"Your wallet is ready. {country_flag} {country_name} detected.\n"
-            f"Your money moves instantly worldwide.\n"
+            f"{STAR} <b>Welcome, {_safe_escape(first_name)}</b>\n\n"
+            f"Your wallet is ready.\n"
+            f"{country_flag} {country_name}\n"
             f"{referral_line}\n"
-            f"{DIVIDER}\n"
-            f"  <b>Your Welcome Gift</b>\n\n"
-            f"  \U0001f48e  <b>{fmt_number(WELCOME_BONUS_SIDI)} SIDI</b>\n"
-            f"  \U0001f4b5  {fmt_naira(welcome_naira)}\n"
-            f"  \U0001f512  Withdrawable after {WELCOME_BONUS_HOLD_DAYS} days\n"
             f"{DIVIDER}\n\n"
-            f"Sidicoin lets you send money to anyone worldwide using "
-            f"just their Telegram @username \u2014 instantly, with zero fees.\n\n"
-            f"Let's get you started {STAR}"
+            f"  <b>Welcome Gift</b>\n\n"
+            f"  <b>{fmt_number(WELCOME_BONUS_SIDI)} SIDI</b>  ({fmt_naira(welcome_naira)})\n\n"
+            f"  Withdrawable in {WELCOME_BONUS_HOLD_DAYS} days.\n"
+            f"  Use it to send, play games, or trade.\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Send money to anyone with a Telegram\n"
+            f"  username. Instant. Zero fees. Worldwide.\n\n"
+            f"  Let's go {STAR}"
         )
 
         try:
@@ -337,17 +336,17 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 
         # Send enhanced onboarding step 1
         onboard_text = (
-            f"\U0001f44b <b>Welcome aboard!</b>\n\n"
-            f"Here's what makes Sidicoin special:\n\n"
-            f"  \u26a1 <b>Instant transfers</b>\n"
-            f"     Send money in under 2 seconds\n\n"
-            f"  \U0001f310 <b>Works across Africa</b>\n"
-            f"     Nigeria, Ghana, Kenya & more\n\n"
-            f"  \U0001f4b0 <b>Zero fees on transfers</b>\n"
-            f"     Send to any Telegram user for free\n\n"
-            f"  \U0001f512 <b>Bank-grade security</b>\n"
-            f"     Your money is protected 24/7\n\n"
-            f"Ready to explore?"
+            f"<b>What you can do</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>Send</b>      /send @user 500\n"
+            f"  <b>Buy</b>       /buy\n"
+            f"  <b>Cash Out</b>  /sell\n"
+            f"  <b>Escrow</b>    /escrow\n"
+            f"  <b>Games</b>     /game\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  Instant transfers across Africa.\n"
+            f"  Zero fees. Always.\n\n"
+            f"{DIVIDER}"
         )
         await message.answer(onboard_text, reply_markup=onboarding_step1_keyboard())
 
@@ -393,18 +392,20 @@ async def _show_balance(msg: Message, user: dict):
     limit = PREMIUM_DAILY_LIMIT if is_prem else FREE_DAILY_LIMIT
     used = float(limit) - remaining
 
+    pct = min((used / float(limit)) * 100, 100) if limit else 0
+
     text = (
-        f"{STAR} <b>{_safe_escape(full_name)}'s Wallet</b>\n"
-        f"@{username}\n\n"
+        f"{STAR} <b>Wallet</b>  @{username}\n\n"
         f"{DIVIDER}\n\n"
-        f"  \U0001f48e <b>{fmt_number(balance)} SIDI</b>\n"
-        f"  \U0001f4b5 {fmt_naira(naira)}\n\n"
+        f"  <b>{fmt_number(balance)} SIDI</b>\n"
+        f"  {fmt_naira(naira)}\n\n"
         f"{THIN_DIVIDER}\n\n"
-        f"  \U0001f4e4 Sent       {fmt_number(total_sent)} SIDI\n"
-        f"  \U0001f4e5 Received   {fmt_number(total_received)} SIDI\n"
-        f"  \U0001f3c6 Account    {badge}\n"
-        f"  \U0001f4ca Daily      {progress_bar(used, float(limit))}  "
-        f"{fmt_number(remaining)} left\n\n"
+        f"  Sent         {fmt_number(total_sent)} SIDI\n"
+        f"  Received     {fmt_number(total_received)} SIDI\n"
+        f"  Status       {badge}\n\n"
+        f"{THIN_DIVIDER}\n\n"
+        f"  Daily limit  {progress_bar(used, float(limit))}\n"
+        f"               {fmt_number(remaining)} of {fmt_number(float(limit))} SIDI left\n\n"
         f"{DIVIDER}"
     )
     try:
@@ -562,15 +563,20 @@ async def cmd_buy(message: Message):
             await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
+        balance = float(user.get("sidi_balance", 0))
         await message.answer(
             f"{STAR} <b>Buy SIDI</b>\n\n"
-            f"How much would you like to buy?\n\n"
-            f"Enter amount in SIDI or Naira:\n\n"
-            f"  <code>500</code>        \u2192 500 SIDI\n"
-            f"  <code>2000 SIDI</code>  \u2192 2,000 SIDI\n"
-            f"  <code>5000 NGN</code>   \u2192 {fmt_naira(5000)} worth\n"
-            f"  <code>5k</code>         \u2192 5,000 SIDI\n\n"
-            f"Fee: <b>Free</b> \u2705",
+            f"{DIVIDER}\n\n"
+            f"  Balance    <b>{fmt_number(balance)} SIDI</b>\n"
+            f"  Rate       1 SIDI = {fmt_naira(25)}\n"
+            f"  Fee        <b>Free</b>\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  Enter amount in SIDI or Naira:\n\n"
+            f"  <code>500</code>         500 SIDI\n"
+            f"  <code>2000 SIDI</code>   2,000 SIDI\n"
+            f"  <code>5000 NGN</code>    {fmt_naira(5000)} worth\n"
+            f"  <code>5k</code>          5,000 SIDI\n\n"
+            f"{DIVIDER}",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "buy_amount")
@@ -602,11 +608,22 @@ async def cmd_sell(message: Message):
             )
             return
 
+        naira_val = sidi_to_naira(balance)
+        bank_name = user.get("bank_name", "")
+        bank_acct = user.get("bank_account", "")
+        bank_line = f"  Bank       {_safe_escape(bank_name)} ({bank_acct})\n" if bank_name else "  Bank       Not set (we'll ask)\n"
+
         await message.answer(
-            f"{STAR} <b>Cash Out SIDI</b>\n\n"
-            f"Balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
-            f"How much SIDI would you like to cash out?\n"
-            f"Fee: <b>Free</b> \u2705",
+            f"{STAR} <b>Cash Out</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Balance    <b>{fmt_number(balance)} SIDI</b>\n"
+            f"  Value      {fmt_naira(naira_val)}\n"
+            f"  Fee        <b>Free</b>\n"
+            f"{bank_line}\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  How much SIDI to cash out?\n"
+            f"  Enter amount or type <code>all</code>\n\n"
+            f"{DIVIDER}",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "sell_amount")
@@ -1268,15 +1285,24 @@ async def cmd_admin_stats(message: Message):
     volume = float(stats.get("daily_volume_ngn", 0))
     tx_count = int(stats.get("daily_tx_count", 0))
     fees = float(stats.get("total_fees_sidi", 0))
+    merchant_fees = float(stats.get("merchant_fees_total", 0))
+    merchant_tx = int(stats.get("merchant_tx_count", 0))
+
     text = (
-        f"\U0001f6e1\ufe0f <b>Admin Dashboard</b>\n\n"
-        f"Total Users: {fmt_number(user_count)}\n"
-        f"Active Holders: {fmt_number(holders)}\n"
-        f"Circulating: {fmt_number(circulating)} SIDI\n"
-        f"Daily Volume: {fmt_naira(volume)}\n"
-        f"Daily Tx: {fmt_number(tx_count)}\n"
-        f"Fees: {fmt_number(fees)} SIDI ({fmt_naira(sidi_to_naira(fees))})\n"
-        f"Fee Wallet: <code>{SIDI_FEE_WALLET or 'Not set'}</code>"
+        f"{STAR} <b>Admin Dashboard</b>\n\n"
+        f"{DIVIDER}\n\n"
+        f"  <b>Users</b>\n\n"
+        f"  Total          {fmt_number(user_count)}\n"
+        f"  Active         {fmt_number(holders)}\n\n"
+        f"  <b>Economy</b>\n\n"
+        f"  Circulating    {fmt_number(circulating)} SIDI\n"
+        f"  Daily volume   {fmt_naira(volume)}\n"
+        f"  Daily tx       {fmt_number(tx_count)}\n\n"
+        f"  <b>Revenue</b>\n\n"
+        f"  Platform fees  {fmt_number(fees)} SIDI\n"
+        f"  Merchant fees  {fmt_number(merchant_fees)} SIDI\n"
+        f"  Merchant tx    {fmt_number(merchant_tx)}\n\n"
+        f"{DIVIDER}"
     )
     await message.answer(text)
 
@@ -2977,19 +3003,27 @@ async def cb_escrow_deliver(callback: CallbackQuery, bot: Bot):
         result = mark_delivered(escrow_id, str(callback.from_user.id))
         if result.get("success"):
             escrow = get_escrow(escrow_id)
+            amount = float(escrow.get("amount_sidi", 0))
             await callback.message.edit_text(
-                f"\U0001f4e6 <b>Marked as Delivered!</b>\n\n"
-                f"Waiting for buyer to confirm delivery.\n"
-                f"Funds will be released once confirmed {STAR}",
+                f"\u2705 <b>Marked as Delivered</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Escrow     <code>{escrow_id}</code>\n"
+                f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n"
+                f"  Status     Awaiting buyer confirmation\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Funds release once buyer confirms {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             from services.notifications import notify_user as _notify
             await _notify(
                 bot, escrow["buyer_id"],
                 f"\U0001f4e6 <b>Delivery Notification</b>\n\n"
-                f"Seller marked escrow <code>{escrow_id}</code> as delivered.\n\n"
-                f"Please confirm if you received everything.\n"
-                f"Type /escrow to confirm or dispute {STAR}",
+                f"{DIVIDER}\n\n"
+                f"  Escrow     <code>{escrow_id}</code>\n"
+                f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Seller marked this as delivered.\n"
+                f"  Confirm or dispute via /escrow {STAR}",
             )
         else:
             await callback.answer(result.get("message", "Error"), show_alert=True)
@@ -3011,19 +3045,29 @@ async def cb_escrow_confirm(callback: CallbackQuery, bot: Bot):
         result = confirm_delivery(escrow_id, str(callback.from_user.id))
         if result.get("success"):
             amount = float(result.get("amount", 0))
+            desc = escrow.get("description", "Trade")
             await callback.message.edit_text(
-                f"\u2705 <b>Escrow Complete!</b>\n\n"
-                f"<b>{fmt_number(amount)} SIDI</b> has been released to the seller.\n\n"
-                f"Trade completed successfully. Thank you for\n"
-                f"using Sidicoin Escrow {STAR}",
+                f"\u2705 <b>Escrow Complete</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Escrow     <code>{escrow_id}</code>\n"
+                f"  Item       {_safe_escape(desc)}\n"
+                f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n"
+                f"  Status     Released to seller\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Trade completed. Thank you {STAR}",
                 reply_markup=home_keyboard(),
             )
             from services.notifications import notify_user as _notify
+            seller = get_user(escrow["seller_id"])
+            s_balance = float(seller.get("sidi_balance", 0)) if seller else 0
             await _notify(
                 bot, escrow["seller_id"],
-                f"\u2705 <b>Funds Released!</b>\n\n"
-                f"Buyer confirmed delivery on <code>{escrow_id}</code>.\n"
-                f"+<b>{fmt_number(amount)} SIDI</b> added to your wallet {STAR}",
+                f"\u2705 <b>Funds Released</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Escrow     <code>{escrow_id}</code>\n"
+                f"  Received   +<b>{fmt_number(amount)} SIDI</b>\n"
+                f"  Balance    <b>{fmt_number(s_balance)} SIDI</b>\n\n"
+                f"{DIVIDER} {STAR}",
             )
         else:
             await callback.answer(result.get("message", "Error"), show_alert=True)
@@ -3159,18 +3203,18 @@ async def cmd_merchant(message: Message):
             total_fees = float(user.get("merchant_total_fees", 0))
             fee_rate = float(user.get("merchant_fee_rate", 0.02))
 
+            net = total_received - total_fees
             text = (
-                f"\U0001f3e2 <b>Merchant Dashboard</b>\n\n"
-                f"  Business: <b>{_safe_escape(merchant_name)}</b>\n"
-                f"  Fee rate: <b>{fee_rate * 100:.1f}%</b> per transaction\n\n"
+                f"{STAR} <b>{_safe_escape(merchant_name)}</b>\n\n"
                 f"{DIVIDER}\n\n"
-                f"  Total received: <b>{fmt_number(total_received)} SIDI</b>\n"
-                f"  Fees paid:      <b>{fmt_number(total_fees)} SIDI</b>\n"
-                f"  Net earned:     <b>{fmt_number(total_received - total_fees)} SIDI</b>\n\n"
-                f"{DIVIDER}\n\n"
-                f"  Generate a payment link to collect SIDI\n"
-                f"  from your customers. Share the link anywhere.\n\n"
-                f"  Users pay you free. You pay 2% service fee {STAR}"
+                f"  Received     <b>{fmt_number(total_received)} SIDI</b>\n"
+                f"  Fees ({fee_rate * 100:.0f}%)    -{fmt_number(total_fees)} SIDI\n"
+                f"  Net earned   <b>{fmt_number(net)} SIDI</b>\n"
+                f"  Net value    {fmt_naira(sidi_to_naira(net))}\n\n"
+                f"{THIN_DIVIDER}\n\n"
+                f"  Generate a payment link and share it\n"
+                f"  anywhere. Customers pay free {STAR}\n\n"
+                f"{DIVIDER}"
             )
             await message.answer(text, reply_markup=merchant_keyboard())
 
@@ -3337,11 +3381,14 @@ async def cb_merchant_pay(callback: CallbackQuery, bot: Bot):
         new_balance = float(payer.get("sidi_balance", 0))
 
         await callback.message.edit_text(
-            f"\u2705 <b>Payment Successful!</b>\n\n"
-            f"  Paid to:    <b>{_safe_escape(merchant_name)}</b>\n"
-            f"  Amount:     <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n"
-            f"  Reference:  <code>{_safe_escape(ref)}</code>\n\n"
-            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b> {STAR}",
+            f"\u2705 <b>Payment Successful</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Paid to    <b>{_safe_escape(merchant_name)}</b>\n"
+            f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n"
+            f"  Value      {fmt_naira(naira)}\n"
+            f"  Ref        <code>{_safe_escape(ref)}</code>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Balance    <b>{fmt_number(new_balance)} SIDI</b> {STAR}",
             reply_markup=home_keyboard(),
         )
         await callback.answer(f"Paid {fmt_number(amount)} SIDI!")
@@ -3349,13 +3396,15 @@ async def cb_merchant_pay(callback: CallbackQuery, bot: Bot):
         # Notify merchant
         await notify_user(
             bot, merchant_id,
-            f"\U0001f4b0 <b>Payment Received!</b>\n\n"
-            f"  From:      @{payer_username}\n"
-            f"  Amount:    <b>{fmt_number(amount)} SIDI</b>\n"
-            f"  Fee (2%):  -{fmt_number(fee)} SIDI\n"
-            f"  Net:       <b>{fmt_number(net_to_merchant)} SIDI</b>\n"
-            f"  Reference: {ref}\n\n"
-            f"  Type /merchant to view your dashboard {STAR}",
+            f"\u2705 <b>Payment Received</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  From       @{payer_username}\n"
+            f"  Amount     <b>{fmt_number(amount)} SIDI</b>\n"
+            f"  Fee (2%)   -{fmt_number(fee)} SIDI\n"
+            f"  Net        <b>{fmt_number(net_to_merchant)} SIDI</b>\n"
+            f"  Ref        {ref}\n\n"
+            f"{DIVIDER}\n\n"
+            f"  /merchant to view dashboard {STAR}",
         )
 
     except Exception as e:
@@ -3707,38 +3756,44 @@ async def cb_flip_play(callback: CallbackQuery):
         choice_icon = "\U0001f7e1" if player_choice == "heads" else "\U0001f535"
 
         if won:
-            winnings = bet  # Net gain
+            winnings = bet  # Net gain (2x total, 1x net)
             update_balance(callback.from_user.id, winnings)
             increment_stat("game_payouts", winnings)
             user = get_user(callback.from_user.id)
+            user["games_played"] = int(user.get("games_played", 0)) + 1
+            user["games_won"] = int(user.get("games_won", 0)) + 1
+            save_user(callback.from_user.id, user)
             new_balance = float(user.get("sidi_balance", 0))
 
             text = (
                 f"\U0001fa99 <b>COIN FLIP</b>\n\n"
-                f"  You chose: {choice_icon} <b>{player_choice.title()}</b>\n"
-                f"  Result:    {result_icon} <b>{result.title()}</b>\n\n"
                 f"{DIVIDER}\n\n"
+                f"  You chose   {choice_icon} <b>{player_choice.title()}</b>\n"
+                f"  Result      {result_icon} <b>{result.title()}</b>\n\n"
                 f"  \U0001f389 <b>YOU WON!</b>\n\n"
-                f"  +<b>{fmt_number(bet * 2)} SIDI</b> ({fmt_naira(sidi_to_naira(bet * 2))})\n"
-                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
-                f"{DIVIDER}"
+                f"  +<b>{fmt_number(bet * 2)} SIDI</b>\n"
+                f"  {fmt_naira(sidi_to_naira(bet * 2))}\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>"
             )
         else:
             update_balance(callback.from_user.id, -bet)
             increment_stat("game_revenue", bet)
             user = get_user(callback.from_user.id)
+            user["games_played"] = int(user.get("games_played", 0)) + 1
+            save_user(callback.from_user.id, user)
             new_balance = float(user.get("sidi_balance", 0))
 
             text = (
                 f"\U0001fa99 <b>COIN FLIP</b>\n\n"
-                f"  You chose: {choice_icon} <b>{player_choice.title()}</b>\n"
-                f"  Result:    {result_icon} <b>{result.title()}</b>\n\n"
                 f"{DIVIDER}\n\n"
-                f"  \u274c <b>You lost</b>\n\n"
-                f"  -{fmt_number(bet)} SIDI\n"
-                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"  You chose   {choice_icon} <b>{player_choice.title()}</b>\n"
+                f"  Result      {result_icon} <b>{result.title()}</b>\n\n"
+                f"  \u274c <b>Not this time</b>\n\n"
+                f"  -{fmt_number(bet)} SIDI\n\n"
                 f"{DIVIDER}\n\n"
-                f"  Better luck next time {STAR}"
+                f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"  Try again? {STAR}"
             )
 
         add_transaction(callback.from_user.id, {
@@ -3830,43 +3885,49 @@ async def cb_dice_play(callback: CallbackQuery):
         dice_faces = ["\u2680", "\u2681", "\u2682", "\u2683", "\u2684", "\u2685"]
 
         if won:
-            winnings = bet * 4  # Net gain (they keep bet + win 4x)
+            winnings = bet  # Net gain (2x payout, 1x net)
             update_balance(callback.from_user.id, winnings)
             increment_stat("game_payouts", winnings)
             user = get_user(callback.from_user.id)
+            user["games_played"] = int(user.get("games_played", 0)) + 1
+            user["games_won"] = int(user.get("games_won", 0)) + 1
+            save_user(callback.from_user.id, user)
             new_balance = float(user.get("sidi_balance", 0))
 
             text = (
                 f"\U0001f3b2 <b>DICE ROLL</b>\n\n"
-                f"  You picked: <b>{player_pick}</b>\n"
-                f"  Result:     {dice_faces[result - 1]} <b>{result}</b>\n\n"
                 f"{DIVIDER}\n\n"
-                f"  \U0001f389 <b>JACKPOT!</b>\n\n"
-                f"  +<b>{fmt_number(bet * 5)} SIDI</b> ({fmt_naira(sidi_to_naira(bet * 5))})\n"
-                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
-                f"{DIVIDER}"
+                f"  You picked   <b>{player_pick}</b>\n"
+                f"  Rolled       {dice_faces[result - 1]} <b>{result}</b>\n\n"
+                f"  \U0001f389 <b>YOU WON!</b>\n\n"
+                f"  +<b>{fmt_number(bet * 2)} SIDI</b>\n"
+                f"  {fmt_naira(sidi_to_naira(bet * 2))}\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>"
             )
         else:
             update_balance(callback.from_user.id, -bet)
             increment_stat("game_revenue", bet)
             user = get_user(callback.from_user.id)
+            user["games_played"] = int(user.get("games_played", 0)) + 1
+            save_user(callback.from_user.id, user)
             new_balance = float(user.get("sidi_balance", 0))
 
             text = (
                 f"\U0001f3b2 <b>DICE ROLL</b>\n\n"
-                f"  You picked: <b>{player_pick}</b>\n"
-                f"  Result:     {dice_faces[result - 1]} <b>{result}</b>\n\n"
                 f"{DIVIDER}\n\n"
+                f"  You picked   <b>{player_pick}</b>\n"
+                f"  Rolled       {dice_faces[result - 1]} <b>{result}</b>\n\n"
                 f"  \u274c <b>Not this time</b>\n\n"
-                f"  -{fmt_number(bet)} SIDI\n"
-                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"  -{fmt_number(bet)} SIDI\n\n"
                 f"{DIVIDER}\n\n"
-                f"  Try again? The dice are waiting {STAR}"
+                f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"  Try again? {STAR}"
             )
 
         add_transaction(callback.from_user.id, {
             "type": "game",
-            "amount": bet * 5 if won else bet,
+            "amount": bet * 2 if won else bet,
             "description": f"Dice Roll {'Won' if won else 'Lost'}: picked {player_pick}, rolled {result}",
             "timestamp": int(time.time()),
             "reference": f"GAME-DICE-{int(time.time())}",
@@ -3920,9 +3981,11 @@ async def cb_lucky_bet(callback: CallbackQuery):
         set_pending_action(callback.from_user.id, "game_lucky_pick", {"bet": bet})
         await callback.message.edit_text(
             f"\U0001f3b0 <b>Lucky Number</b>\n\n"
-            f"Bet: <b>{fmt_number(bet)} SIDI</b>\n"
-            f"Win: <b>{fmt_number(bet * 8)} SIDI</b>\n\n"
-            f"Type a number from <b>1 to 10</b>:",
+            f"{DIVIDER}\n\n"
+            f"  Bet      <b>{fmt_number(bet)} SIDI</b>\n"
+            f"  Win      <b>{fmt_number(bet * 4.5)} SIDI</b> (4.5x)\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Type a number from <b>1 to 10</b>:",
             reply_markup=cancel_keyboard(),
         )
         await callback.answer()
@@ -4280,43 +4343,50 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
 
         result = random.randint(1, 10)
         won = pick == result
+        payout_mult = 4.5
 
         if won:
-            winnings = bet * 7  # Net gain
+            winnings = bet * (payout_mult - 1)  # Net gain (3.5x net)
             update_balance(user_id, winnings)
             increment_stat("game_payouts", winnings)
             user = get_user(user_id)
+            user["games_played"] = int(user.get("games_played", 0)) + 1
+            user["games_won"] = int(user.get("games_won", 0)) + 1
+            save_user(user_id, user)
             new_balance = float(user.get("sidi_balance", 0))
             text_msg = (
                 f"\U0001f3b0 <b>LUCKY NUMBER</b>\n\n"
-                f"  Your pick:  <b>{pick}</b>\n"
-                f"  Lucky num:  <b>{result}</b>\n\n"
                 f"{DIVIDER}\n\n"
-                f"  \U0001f389\U0001f389\U0001f389 <b>MEGA WIN!</b>\n\n"
-                f"  +<b>{fmt_number(bet * 8)} SIDI</b> ({fmt_naira(sidi_to_naira(bet * 8))})\n"
-                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
-                f"{DIVIDER}"
+                f"  Your pick    <b>{pick}</b>\n"
+                f"  Drawn        <b>{result}</b>\n\n"
+                f"  \U0001f389 <b>MEGA WIN!</b>\n\n"
+                f"  +<b>{fmt_number(bet * payout_mult)} SIDI</b>\n"
+                f"  {fmt_naira(sidi_to_naira(bet * payout_mult))}\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>"
             )
         else:
             update_balance(user_id, -bet)
             increment_stat("game_revenue", bet)
             user = get_user(user_id)
+            user["games_played"] = int(user.get("games_played", 0)) + 1
+            save_user(user_id, user)
             new_balance = float(user.get("sidi_balance", 0))
             text_msg = (
                 f"\U0001f3b0 <b>LUCKY NUMBER</b>\n\n"
-                f"  Your pick:  <b>{pick}</b>\n"
-                f"  Lucky num:  <b>{result}</b>\n\n"
                 f"{DIVIDER}\n\n"
-                f"  \u274c <b>Not your lucky number</b>\n\n"
-                f"  -{fmt_number(bet)} SIDI\n"
-                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"  Your pick    <b>{pick}</b>\n"
+                f"  Drawn        <b>{result}</b>\n\n"
+                f"  \u274c <b>Not this time</b>\n\n"
+                f"  -{fmt_number(bet)} SIDI\n\n"
                 f"{DIVIDER}\n\n"
-                f"  Will you be luckier next time? {STAR}"
+                f"  Balance    <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"  Try again? {STAR}"
             )
 
         add_transaction(user_id, {
             "type": "game",
-            "amount": bet * 8 if won else bet,
+            "amount": bet * payout_mult if won else bet,
             "description": f"Lucky Number {'Won' if won else 'Lost'}: picked {pick}, drew {result}",
             "timestamp": int(time.time()),
             "reference": f"GAME-LUCKY-{int(time.time())}",
