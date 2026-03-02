@@ -1,5 +1,5 @@
 """
-Sidicoin Telegram Bot — main.py
+SidiApp Telegram Bot — main.py
 FastAPI entry point with webhook routes and scheduled jobs.
 Production domain: coin.sidihost.sbs
 """
@@ -28,7 +28,7 @@ logging.basicConfig(
 # Suppress noisy third-party loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
-logger = logging.getLogger("sidicoin")
+logger = logging.getLogger("sidiapp")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://coin.sidihost.sbs")
@@ -167,7 +167,7 @@ async def lifespan(app: FastAPI):
     logger.info("Bot shutdown complete")
 
 
-app = FastAPI(title="Sidicoin Bot", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="SidiApp Bot", version="2.0.0", lifespan=lifespan)
 
 # ── Mount routes ──────────────────────────────────────────────
 from routes.telegram import router as telegram_router
@@ -184,7 +184,7 @@ app.include_router(admin_router)
 @app.get("/")
 async def root():
     return {
-        "service": "Sidicoin Bot",
+        "service": "SidiApp Bot",
         "status": "running",
         "domain": "coin.sidihost.sbs",
     }

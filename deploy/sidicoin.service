@@ -1,5 +1,5 @@
 [Unit]
-Description=Sidicoin Telegram Bot - Africa's Leading Crypto Payment Platform
+Description=SidiApp Telegram Bot - Africa's Leading Crypto Payment Platform
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -7,9 +7,9 @@ Wants=network-online.target
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/sidicoin
-EnvironmentFile=/var/www/sidicoin/.env
-ExecStart=/var/www/sidicoin/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+WorkingDirectory=/var/www/sidiapp
+EnvironmentFile=/var/www/sidiapp/.env
+ExecStart=/var/www/sidiapp/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=60
@@ -18,13 +18,13 @@ StartLimitBurst=5
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sidicoin
+SyslogIdentifier=sidiapp
 
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/www/sidicoin
+ReadWritePaths=/var/www/sidiapp
 
 [Install]
 WantedBy=multi-user.target

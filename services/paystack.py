@@ -17,7 +17,7 @@ import time
 
 import httpx
 
-logger = logging.getLogger("sidicoin.paystack")
+logger = logging.getLogger("sidiapp.paystack")
 
 PSK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
 PSK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY", "")
@@ -269,10 +269,10 @@ async def create_payment_link(
     amount: float,
     currency: str,
     customer_name: str,
-    customer_email: str = "user@sidicoin.app",
+    customer_email: str = "user@sidiapp.app",
     payment_type: str = "card",
     redirect_url: str = "https://coin.sidihost.sbs/payment/complete",
-    narration: str = "Sidicoin Purchase",
+    narration: str = "SidiApp Purchase",
     meta: dict = None,
 ) -> dict:
     """
@@ -305,9 +305,9 @@ async def create_payment_link(
         "callback_url": redirect_url,
         "channels": channels,
         "metadata": {
-            "customer_name": customer_name or "Sidicoin User",
+            "customer_name": customer_name or "SidiApp User",
             "custom_fields": [
-                {"display_name": "Platform", "variable_name": "platform", "value": "Sidicoin"},
+                {"display_name": "Platform", "variable_name": "platform", "value": "SidiApp"},
             ],
             **(meta or {}),
         },
@@ -395,7 +395,7 @@ async def create_transfer(
     amount: float,
     currency: str,
     recipient_code: str,
-    reason: str = "Sidicoin Withdrawal",
+    reason: str = "SidiApp Withdrawal",
 ) -> dict:
     """
     Initiate a transfer to a recipient.

@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from upstash_redis import Redis
 
-logger = logging.getLogger("sidicoin.redis")
+logger = logging.getLogger("sidiapp.redis")
 
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")

@@ -12,7 +12,7 @@ from functools import partial
 
 from groq import Groq
 
-logger = logging.getLogger("sidicoin.groq")
+logger = logging.getLogger("sidiapp.groq")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
@@ -24,8 +24,8 @@ STREAM_EDIT_INTERVAL = 1.0
 STREAM_CURSOR = " \u25cf"
 
 SYSTEM_PROMPT = (
-    "You are Sidi, the intelligent assistant for Sidicoin -- the digital money "
-    "transfer platform on Telegram. Sidicoin lets anyone send, receive, and "
+    "You are Sidi, the intelligent assistant for SidiApp -- the digital money "
+    "transfer platform on Telegram. SidiApp lets anyone send, receive, and "
     "manage money instantly using just a Telegram username. "
     "Personality: warm, smart and proudly African, going global. "
     "Use simple everyday language. Never use the word 'cryptocurrency' or 'crypto'. "
@@ -46,9 +46,9 @@ SYSTEM_PROMPT = (
     "/escrow -- Safe P2P trades\n"
     "/refer -- Earn free SIDI\n"
     "/checkin -- Monthly check-in (up to 44 SIDI)\n"
-    "/support -- Help keep Sidicoin free\n"
+    "/support -- Help keep SidiApp free\n"
     "/help -- All commands\n"
-    "\nSidicoin facts:\n"
+    "\nSidiApp facts:\n"
     "- 1 SIDI = \u20a625 (stable digital currency, not volatile)\n"
     "- Zero fees on all transfers, buy, and sell\n"
     "- Works in 13+ countries (Nigeria, Kenya, Ghana, South Africa, etc.)\n"
@@ -60,7 +60,7 @@ SYSTEM_PROMPT = (
 
 
 GROUP_SYSTEM_PROMPT = (
-    "You are Sidi, the AI assistant for Sidicoin -- a digital money platform on Telegram. "
+    "You are Sidi, the AI assistant for SidiApp -- a digital money platform on Telegram. "
     "You are in a GROUP CHAT. Be concise and helpful. "
     "Max 2 sentences. Don't be spammy. "
     "SIDI is digital money (like mobile money), not crypto. "
@@ -92,7 +92,7 @@ async def get_ai_response(user_message: str, user_name: str = "User") -> str:
     """
     if not _sync_client:
         return (
-            "I'm Sidi, your Sidicoin assistant! ✦ "
+            "I'm Sidi, your SidiApp assistant! ✦ "
             "Try /help to see all available commands, "
             "or /send to transfer money to someone."
         )
@@ -157,7 +157,7 @@ async def stream_ai_response(message, user_message: str, user_name: str = "User"
 
     if not _sync_client:
         fallback = (
-            "I'm Sidi, your Sidicoin assistant! \u2726 "
+            "I'm Sidi, your SidiApp assistant! \u2726 "
             "Try /help to see all available commands, "
             "or /send to transfer money to someone."
         )

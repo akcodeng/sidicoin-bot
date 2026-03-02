@@ -21,7 +21,7 @@ from services.redis import (
 from utils.formatting import sidi_to_naira, fmt_number
 
 router = APIRouter(prefix="/admin")
-logger = logging.getLogger("sidicoin.routes.admin")
+logger = logging.getLogger("sidiapp.routes.admin")
 
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "")
 
@@ -156,6 +156,6 @@ async def admin_health(request: Request):
     return JSONResponse(content={
         "status": "ok" if redis_ok else "degraded",
         "redis": "connected" if redis_ok else "error",
-        "service": "Sidicoin Bot",
+        "service": "SidiApp Bot",
         "domain": "coin.sidihost.sbs",
     })

@@ -37,7 +37,7 @@ from utils.formatting import (
 )
 
 router = APIRouter()
-logger = logging.getLogger("sidicoin.routes.korapay")
+logger = logging.getLogger("sidiapp.routes.korapay")
 
 
 @router.post("/webhook/korapay")
@@ -249,7 +249,7 @@ async def _process_premium_payment(bot, telegram_id: str, pending: dict, referen
     from bot.keyboards import home_keyboard
     text = (
         f"{STAR} <b>Premium Activated!</b>\n\n"
-        f"Welcome to Sidicoin Premium {STAR}\n\n"
+        f"Welcome to SidiApp Premium {STAR}\n\n"
         f"{DIVIDER}\n\n"
         f"  Your benefits (30 days):\n\n"
         f"  \u26a1 500,000 SIDI daily limit\n"

@@ -1,5 +1,5 @@
 """
-Input validation utilities for Sidicoin bot.
+Input validation utilities for SidiApp bot.
 """
 
 import re
@@ -102,13 +102,13 @@ def find_similar_usernames(target: str, known_usernames: list[str], threshold: f
 def calculate_fee(amount_sidi: float, is_premium: bool, tx_type: str = "buy") -> float:
     """
     Calculate fee in SIDI.
-    Sidicoin charges ZERO fees on all operations.
+    SidiApp charges ZERO fees on all operations.
     """
     return 0.0
 
 
 def calculate_fee_naira(amount_naira: float, is_premium: bool, tx_type: str = "buy") -> float:
-    """Calculate fee in NGN. Sidicoin charges ZERO fees."""
+    """Calculate fee in NGN. SidiApp charges ZERO fees."""
     return 0.0
 
 

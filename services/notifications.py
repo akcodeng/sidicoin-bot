@@ -1,5 +1,5 @@
 """
-Scheduled notification jobs for Sidicoin bot.
+Scheduled notification jobs for SidiApp bot.
 Runs via APScheduler from main.py.
 All times in WAT (UTC+1 / Africa/Lagos).
 """
@@ -17,7 +17,7 @@ from services.redis import (
 )
 from utils.formatting import fmt_number, sidi_to_naira, fmt_naira
 
-logger = logging.getLogger("sidicoin.notifications")
+logger = logging.getLogger("sidiapp.notifications")
 
 
 async def _safe_send(bot: Bot, chat_id: str, text: str, **kwargs) -> bool:
@@ -115,7 +115,7 @@ async def send_premium_expiry_alerts(bot: Bot):
                 name = user.get("full_name", "there")
 
                 text = (
-                    f"\u26a0\ufe0f {name}, your Sidicoin Premium \u2726 expires in "
+                    f"\u26a0\ufe0f {name}, your SidiApp Premium \u2726 expires in "
                     f"<b>{days_left} day{'s' if days_left != 1 else ''}</b>!\n\n"
                     f"Renew now to keep your:\n"
                     f"\u2022 500K SIDI daily limit\n"

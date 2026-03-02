@@ -1,5 +1,5 @@
 """
-Formatting utilities for Sidicoin bot messages.
+Formatting utilities for SidiApp bot messages.
 All messages use Telegram HTML parse mode.
 Beautiful, branded, consistent formatting throughout.
 """
@@ -248,7 +248,7 @@ def generate_downloadable_receipt(
         f"  Reference:   {reference}",
         "",
         "  ================================================",
-        "  Sidicoin - Instant money transfers across Africa",
+        "  SidiApp - Instant money transfers across Africa",
         "  https://coin.sidihost.sbs",
         "  ================================================",
         "",

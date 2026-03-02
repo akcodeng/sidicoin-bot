@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# Sidicoin Bot — Automated Deployment Script
+# SidiApp Bot — Automated Deployment Script
 # Target: Ubuntu 22.04 (DigitalOcean)
 # Domain: coin.sidihost.sbs
 # ═══════════════════════════════════════════════════════════════
@@ -8,12 +8,12 @@
 set -euo pipefail
 
 DOMAIN="coin.sidihost.sbs"
-APP_DIR="/var/www/sidicoin"
-SERVICE_NAME="sidicoin"
+APP_DIR="/var/www/sidiapp"
+SERVICE_NAME="sidiapp"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "═══════════════════════════════════════════════════"
-echo "  Sidicoin Bot — Deployment Script"
+echo "  SidiApp Bot — Deployment Script"
 echo "  Domain: $DOMAIN"
 echo "═══════════════════════════════════════════════════"
 echo ""
@@ -75,9 +75,9 @@ python3.11 -m venv "$APP_DIR/venv"
 
 # ── Step 5: Configure systemd service ──────────────────────────
 echo "[5/9] Installing systemd service..."
-cp "$REPO_DIR/deploy/sidicoin.service" /etc/systemd/system/sidicoin.service
+cp "$REPO_DIR/deploy/sidiapp.service" /etc/systemd/system/sidiapp.service
 systemctl daemon-reload
-systemctl enable sidicoin
+systemctl enable sidiapp
 
 # ── Step 6: Configure nginx ────────────────────────────────────
 echo "[6/9] Configuring nginx..."
@@ -86,7 +86,7 @@ echo "[6/9] Configuring nginx..."
 rm -f /etc/nginx/sites-enabled/default
 
 # Write initial HTTP-only config for certbot
-cat > /etc/nginx/sites-available/sidicoin << 'NGINX_TEMP'
+cat > /etc/nginx/sites-available/sidiapp << 'NGINX_TEMP'
 server {
     listen 80;
     server_name coin.sidihost.sbs;
@@ -96,13 +96,13 @@ server {
     }
 
     location / {
-        return 200 'Sidicoin Bot - Setting up SSL...';
+        return 200 'SidiApp Bot - Setting up SSL...';
         add_header Content-Type text/plain;
     }
 }
 NGINX_TEMP
 
-ln -sf /etc/nginx/sites-available/sidicoin /etc/nginx/sites-enabled/sidicoin
+ln -sf /etc/nginx/sites-available/sidiapp /etc/nginx/sites-enabled/sidiapp
 mkdir -p /var/www/certbot
 
 nginx -t && systemctl restart nginx
@@ -112,7 +112,7 @@ echo "[7/9] Obtaining SSL certificate for $DOMAIN..."
 certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email admin@sidihost.sbs --redirect
 
 # Now install the full nginx config
-cp "$REPO_DIR/deploy/nginx.conf" /etc/nginx/sites-available/sidicoin
+cp "$REPO_DIR/deploy/nginx.conf" /etc/nginx/sites-available/sidiapp
 nginx -t && systemctl reload nginx
 
 echo "  SSL certificate installed successfully"
@@ -125,17 +125,17 @@ ufw allow 443/tcp
 ufw --force enable
 
 # ── Step 9: Start the service ──────────────────────────────────
-echo "[9/9] Starting Sidicoin bot service..."
+echo "[9/9] Starting SidiApp bot service..."
 
 # Check if .env has actual values (not just the example)
 if grep -q "^TELEGRAM_BOT_TOKEN=$" "$APP_DIR/.env"; then
     echo ""
     echo "  WARNING: TELEGRAM_BOT_TOKEN is empty in .env"
     echo "  Please edit $APP_DIR/.env with your credentials, then run:"
-    echo "    sudo systemctl start sidicoin"
+    echo "    sudo systemctl start sidiapp"
     echo ""
 else
-    systemctl start sidicoin
+    systemctl start sidiapp
     sleep 3
 
     # Set Telegram webhook
@@ -151,18 +151,18 @@ else
 
     echo ""
     echo "  Service started. Check status with:"
-    echo "    sudo systemctl status sidicoin"
-    echo "    sudo journalctl -u sidicoin -f"
+    echo "    sudo systemctl status sidiapp"
+    echo "    sudo journalctl -u sidiapp -f"
 fi
 
 echo ""
 echo "═══════════════════════════════════════════════════"
-echo "  Sidicoin Bot Deployment Complete!"
+echo "  SidiApp Bot Deployment Complete!"
 echo ""
 echo "  Domain:    https://$DOMAIN"
 echo "  Webhook:   https://$DOMAIN/webhook/telegram"
 echo "  Korapay:   https://$DOMAIN/webhook/korapay"
 echo "  Health:    https://$DOMAIN/health"
-echo "  Logs:      sudo journalctl -u sidicoin -f"
+echo "  Logs:      sudo journalctl -u sidiapp -f"
 echo "  Config:    $APP_DIR/.env"
 echo "═══════════════════════════════════════════════════"
