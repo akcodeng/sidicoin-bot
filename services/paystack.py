@@ -1,11 +1,12 @@
 """
-Flutterwave payment service for international collections and payouts.
-Supports cards (Visa/Mastercard globally), mobile money (M-Pesa, MTN),
-bank transfers across Africa, and USD/GBP/EUR payouts.
+Paystack payment service for international collections and payouts.
+Supports cards (Visa/Mastercard), bank transfers, mobile money,
+and payouts across Nigeria, Ghana, Kenya, South Africa.
 
-Korapay is kept for NGN-only operations. Flutterwave handles international.
+Korapay is kept for NGN bank transfer collections.
+Paystack handles cards, mobile money, and international payments.
 
-API docs: https://developer.flutterwave.com/reference
+API docs: https://paystack.com/docs/api
 """
 
 import os
@@ -16,12 +17,11 @@ import time
 
 import httpx
 
-logger = logging.getLogger("sidicoin.flutterwave")
+logger = logging.getLogger("sidicoin.paystack")
 
-FLW_SECRET_KEY = os.getenv("FLUTTERWAVE_SECRET_KEY", "")
-FLW_PUBLIC_KEY = os.getenv("FLUTTERWAVE_PUBLIC_KEY", "")
-FLW_WEBHOOK_HASH = os.getenv("FLUTTERWAVE_WEBHOOK_HASH", "")
-FLW_BASE_URL = "https://api.flutterwave.com/v3"
+PSK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
+PSK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY", "")
+PSK_BASE_URL = "https://api.paystack.co"
 
 # Supported countries with their currency and payment methods
 COUNTRY_CONFIG = {
@@ -37,7 +37,7 @@ COUNTRY_CONFIG = {
         "currency": "GHS",
         "name": "Ghana",
         "flag": "\U0001f1ec\U0001f1ed",
-        "methods": ["mobile_money_ghana", "card"],
+        "methods": ["mobile_money", "card"],
         "payout_type": "mobile_money",
         "min_payout": 1,
     },
@@ -45,7 +45,7 @@ COUNTRY_CONFIG = {
         "currency": "KES",
         "name": "Kenya",
         "flag": "\U0001f1f0\U0001f1ea",
-        "methods": ["mpesa", "card"],
+        "methods": ["mobile_money", "card"],
         "payout_type": "mobile_money",
         "min_payout": 10,
     },
@@ -61,48 +61,40 @@ COUNTRY_CONFIG = {
         "currency": "TZS",
         "name": "Tanzania",
         "flag": "\U0001f1f9\U0001f1ff",
-        "methods": ["mobile_money_tanzania", "card"],
-        "payout_type": "mobile_money",
+        "methods": ["card"],
+        "payout_type": "bank",
         "min_payout": 100,
     },
     "UG": {
         "currency": "UGX",
         "name": "Uganda",
         "flag": "\U0001f1fa\U0001f1ec",
-        "methods": ["mobile_money_uganda", "card"],
-        "payout_type": "mobile_money",
+        "methods": ["card"],
+        "payout_type": "bank",
         "min_payout": 500,
     },
     "RW": {
         "currency": "RWF",
         "name": "Rwanda",
         "flag": "\U0001f1f7\U0001f1fc",
-        "methods": ["mobile_money_rwanda", "card"],
-        "payout_type": "mobile_money",
-        "min_payout": 100,
-    },
-    "CM": {
-        "currency": "XAF",
-        "name": "Cameroon",
-        "flag": "\U0001f1e8\U0001f1f2",
-        "methods": ["mobile_money_franco", "card"],
-        "payout_type": "mobile_money",
+        "methods": ["card"],
+        "payout_type": "bank",
         "min_payout": 100,
     },
     "CI": {
         "currency": "XOF",
         "name": "Ivory Coast",
         "flag": "\U0001f1e8\U0001f1ee",
-        "methods": ["mobile_money_franco", "card"],
-        "payout_type": "mobile_money",
+        "methods": ["card"],
+        "payout_type": "bank",
         "min_payout": 100,
     },
     "SN": {
         "currency": "XOF",
         "name": "Senegal",
         "flag": "\U0001f1f8\U0001f1f3",
-        "methods": ["mobile_money_franco", "card"],
-        "payout_type": "mobile_money",
+        "methods": ["card"],
+        "payout_type": "bank",
         "min_payout": 100,
     },
     # International (card-only)
@@ -143,7 +135,6 @@ DEFAULT_COUNTRY = {
 }
 
 # Approximate exchange rates to NGN (updated periodically)
-# In production, you'd fetch these from Flutterwave's rates API
 RATES_TO_NGN = {
     "NGN": 1.0,
     "USD": 1600.0,
@@ -161,7 +152,7 @@ RATES_TO_NGN = {
 
 
 def _headers() -> dict:
-    secret = os.getenv("FLUTTERWAVE_SECRET_KEY", FLW_SECRET_KEY)
+    secret = os.getenv("PAYSTACK_SECRET_KEY", PSK_SECRET_KEY)
     return {
         "Authorization": f"Bearer {secret}",
         "Content-Type": "application/json",
@@ -171,8 +162,8 @@ def _headers() -> dict:
 async def _request(
     method: str, endpoint: str, data: dict = None, retries: int = 3
 ) -> dict:
-    """Make an HTTP request to Flutterwave API with retry + backoff."""
-    url = f"{FLW_BASE_URL}{endpoint}"
+    """Make an HTTP request to Paystack API with retry + backoff."""
+    url = f"{PSK_BASE_URL}{endpoint}"
     headers = _headers()
     last_error = None
 
@@ -184,11 +175,11 @@ async def _request(
                 elif method.upper() == "POST":
                     resp = await client.post(url, headers=headers, json=data)
                 else:
-                    return {"status": "error", "message": f"Unsupported method: {method}"}
+                    return {"status": False, "message": f"Unsupported method: {method}"}
 
                 body = resp.json()
                 logger.info(
-                    f"Flutterwave {method} {endpoint} -> {resp.status_code}: "
+                    f"Paystack {method} {endpoint} -> {resp.status_code}: "
                     f"{body.get('message', '')}"
                 )
 
@@ -197,7 +188,7 @@ async def _request(
 
                 if 400 <= resp.status_code < 500 and resp.status_code != 429:
                     return {
-                        "status": "error",
+                        "status": False,
                         "message": body.get("message", f"HTTP {resp.status_code}"),
                         "data": body.get("data"),
                     }
@@ -206,16 +197,16 @@ async def _request(
 
         except httpx.TimeoutException:
             last_error = "Request timed out"
-            logger.warning(f"Flutterwave timeout (attempt {attempt + 1}/{retries})")
+            logger.warning(f"Paystack timeout (attempt {attempt + 1}/{retries})")
         except Exception as e:
             last_error = str(e)
-            logger.error(f"Flutterwave error (attempt {attempt + 1}/{retries}): {e}")
+            logger.error(f"Paystack error (attempt {attempt + 1}/{retries}): {e}")
 
         if attempt < retries - 1:
             import asyncio
             await asyncio.sleep(1.5 ** attempt)
 
-    return {"status": "error", "message": last_error or "Max retries exceeded"}
+    return {"status": False, "message": last_error or "Max retries exceeded"}
 
 
 def get_country_config(country_code: str) -> dict:
@@ -244,7 +235,7 @@ def detect_country_from_language(language_code: str) -> str:
     """
     lang_map = {
         "en": "NG",  # Default English to Nigeria (primary market)
-        "fr": "CI",  # French -> Ivory Coast (large French-speaking market)
+        "fr": "CI",  # French -> Ivory Coast
         "sw": "KE",  # Swahili -> Kenya
         "ha": "NG",  # Hausa -> Nigeria
         "yo": "NG",  # Yoruba -> Nigeria
@@ -262,7 +253,6 @@ def detect_country_from_language(language_code: str) -> str:
     }
     if not language_code:
         return "NG"
-    # Try exact match first, then prefix
     code = language_code.lower().strip()
     if code in lang_map:
         return lang_map[code]
@@ -286,114 +276,76 @@ async def create_payment_link(
     meta: dict = None,
 ) -> dict:
     """
-    Create a Flutterwave payment link (Standard).
-    Works for cards, mobile money, bank transfer, USSD, etc.
+    Initialize a Paystack transaction and return the checkout URL.
+    Paystack amounts are in kobo (NGN * 100) / pesewas (GHS * 100).
 
     Returns: {success, link, reference}
     """
-    payload = {
-        "tx_ref": reference,
-        "amount": round(float(amount), 2),
-        "currency": currency.upper(),
-        "redirect_url": redirect_url,
-        "payment_options": payment_type,
-        "customer": {
-            "name": customer_name or "Sidicoin User",
-            "email": customer_email,
-        },
-        "customizations": {
-            "title": "Sidicoin",
-            "description": narration,
-            "logo": "https://coin.sidihost.sbs/logo.png",
-        },
-        "meta": meta or {},
-    }
+    # Paystack expects amount in smallest currency unit (kobo/pesewas)
+    amount_minor = int(round(float(amount) * 100))
 
-    result = await _request("POST", "/payments", payload)
-
-    if result.get("status") == "success" and result.get("data"):
-        data = result["data"]
-        return {
-            "success": True,
-            "link": data.get("link", ""),
-            "reference": reference,
-        }
-
-    return {
-        "success": False,
-        "message": result.get("message", "Could not create payment link"),
-    }
-
-
-async def create_charge(
-    reference: str,
-    amount: float,
-    currency: str,
-    payment_type: str,
-    customer_email: str = "user@sidicoin.app",
-    customer_phone: str = "",
-    customer_name: str = "",
-    meta: dict = None,
-) -> dict:
-    """
-    Direct charge API for specific payment methods.
-    For NGN bank transfers, use Korapay instead.
-    This is mainly for mobile money charges.
-    """
-    endpoint_map = {
-        "mpesa": "/charges?type=mpesa",
-        "mobile_money_ghana": "/charges?type=mobile_money_ghana",
-        "mobile_money_uganda": "/charges?type=mobile_money_uganda",
-        "mobile_money_tanzania": "/charges?type=mobile_money_tanzania",
-        "mobile_money_rwanda": "/charges?type=mobile_money_rwanda",
-        "mobile_money_franco": "/charges?type=mobile_money_franco",
-    }
-
-    endpoint = endpoint_map.get(payment_type)
-    if not endpoint:
-        return {"success": False, "message": f"Unsupported charge type: {payment_type}"}
+    channels = []
+    if "card" in payment_type:
+        channels.append("card")
+    if "bank" in payment_type or "bank_transfer" in payment_type:
+        channels.append("bank_transfer")
+        channels.append("bank")
+    if "mobile" in payment_type:
+        channels.append("mobile_money")
+    if "ussd" in payment_type:
+        channels.append("ussd")
+    if not channels:
+        channels = ["card", "bank", "bank_transfer", "ussd", "mobile_money"]
 
     payload = {
-        "tx_ref": reference,
-        "amount": round(float(amount), 2),
+        "reference": reference,
+        "amount": amount_minor,
         "currency": currency.upper(),
         "email": customer_email,
-        "phone_number": customer_phone,
-        "fullname": customer_name or "Sidicoin User",
-        "meta": meta or {},
+        "callback_url": redirect_url,
+        "channels": channels,
+        "metadata": {
+            "customer_name": customer_name or "Sidicoin User",
+            "custom_fields": [
+                {"display_name": "Platform", "variable_name": "platform", "value": "Sidicoin"},
+            ],
+            **(meta or {}),
+        },
     }
 
-    result = await _request("POST", endpoint, payload)
+    result = await _request("POST", "/transaction/initialize", payload)
 
-    if result.get("status") == "success":
-        data = result.get("data", {})
+    if result.get("status") is True and result.get("data"):
+        data = result["data"]
         return {
             "success": True,
-            "status": data.get("status", "pending"),
-            "reference": reference,
-            "message": data.get("message", ""),
-            "data": data,
+            "link": data.get("authorization_url", ""),
+            "access_code": data.get("access_code", ""),
+            "reference": data.get("reference", reference),
         }
 
     return {
         "success": False,
-        "message": result.get("message", "Charge failed"),
+        "message": result.get("message", "Could not initialize payment"),
     }
 
 
-async def verify_transaction(transaction_id: str) -> dict:
-    """Verify a Flutterwave transaction by ID."""
-    result = await _request("GET", f"/transactions/{transaction_id}/verify")
+async def verify_transaction(reference: str) -> dict:
+    """Verify a Paystack transaction by reference."""
+    result = await _request("GET", f"/transaction/verify/{reference}")
 
-    if result.get("status") == "success" and result.get("data"):
+    if result.get("status") is True and result.get("data"):
         data = result["data"]
+        # Paystack returns amount in kobo, convert back
+        amount = float(data.get("amount", 0)) / 100.0
         return {
             "success": True,
             "status": data.get("status", ""),
-            "amount": float(data.get("amount", 0)),
+            "amount": amount,
             "currency": data.get("currency", ""),
-            "tx_ref": data.get("tx_ref", ""),
-            "flw_ref": data.get("flw_ref", ""),
+            "reference": data.get("reference", ""),
+            "gateway_response": data.get("gateway_response", ""),
+            "channel": data.get("channel", ""),
         }
 
     return {"success": False, "message": result.get("message", "Verification failed")}
@@ -403,48 +355,73 @@ async def verify_transaction(transaction_id: str) -> dict:
 #  PAYOUTS -- Send money (Withdraw from SIDI wallet)
 # =====================================================================
 
+async def create_transfer_recipient(
+    name: str,
+    account_number: str,
+    bank_code: str,
+    currency: str = "NGN",
+    recipient_type: str = "nuban",
+) -> dict:
+    """
+    Create a transfer recipient (required before transfers).
+    For mobile money, use type='mobile_money' and pass phone as account_number.
+    """
+    payload = {
+        "type": recipient_type,
+        "name": name,
+        "account_number": account_number,
+        "bank_code": bank_code,
+        "currency": currency.upper(),
+    }
+
+    result = await _request("POST", "/transferrecipient", payload)
+
+    if result.get("status") is True and result.get("data"):
+        data = result["data"]
+        return {
+            "success": True,
+            "recipient_code": data.get("recipient_code", ""),
+            "name": data.get("name", name),
+        }
+
+    return {
+        "success": False,
+        "message": result.get("message", "Could not create recipient"),
+    }
+
+
 async def create_transfer(
     reference: str,
     amount: float,
     currency: str,
-    beneficiary_name: str,
-    account_number: str = "",
-    bank_code: str = "",
-    account_bank: str = "",
-    meta: dict = None,
-    destination_branch_code: str = "",
-    debit_currency: str = "NGN",
-    narration: str = "Sidicoin Withdrawal",
+    recipient_code: str,
+    reason: str = "Sidicoin Withdrawal",
 ) -> dict:
     """
-    Send money to a bank account or mobile money wallet.
-    Works internationally.
+    Initiate a transfer to a recipient.
+    Amount is in the major currency unit (NGN, not kobo).
     """
+    amount_minor = int(round(float(amount) * 100))
+
     payload = {
-        "account_bank": account_bank or bank_code,
-        "account_number": account_number,
-        "amount": round(float(amount), 2),
-        "narration": narration,
-        "currency": currency.upper(),
+        "source": "balance",
+        "amount": amount_minor,
         "reference": reference,
-        "beneficiary_name": beneficiary_name,
-        "debit_currency": debit_currency,
-        "meta": meta or [],
+        "recipient": recipient_code,
+        "reason": reason,
+        "currency": currency.upper(),
     }
 
-    if destination_branch_code:
-        payload["destination_branch_code"] = destination_branch_code
+    result = await _request("POST", "/transfer", payload)
 
-    result = await _request("POST", "/transfers", payload)
-
-    if result.get("status") == "success":
-        data = result.get("data", {})
+    if result.get("status") is True and result.get("data"):
+        data = result["data"]
         return {
             "success": True,
-            "id": data.get("id", ""),
+            "transfer_code": data.get("transfer_code", ""),
             "reference": reference,
-            "status": data.get("status", "NEW"),
-            "amount": float(data.get("amount", amount)),
+            "status": data.get("status", "pending"),
+            "amount": float(data.get("amount", amount * 100)) / 100.0,
             "currency": data.get("currency", currency),
         }
 
@@ -454,57 +431,15 @@ async def create_transfer(
     }
 
 
-async def create_mobile_money_transfer(
-    reference: str,
-    amount: float,
-    currency: str,
-    phone_number: str,
-    network: str,
-    beneficiary_name: str,
-    narration: str = "Sidicoin Withdrawal",
-) -> dict:
-    """Send money via mobile money (M-Pesa, MTN, etc.)."""
-    # Mobile money bank codes by network/country
-    network_bank_map = {
-        "mpesa_ke": "MPS",
-        "mtn_gh": "MTN",
-        "vodafone_gh": "VDF",
-        "tigo_gh": "TGO",
-        "mtn_ug": "MPS",
-        "airtel_ug": "MPS",
-        "mpesa_tz": "MPS",
-        "tigo_tz": "MPS",
-        "mtn_rw": "MPS",
-        "mtn_cm": "FMM",
-        "orange_cm": "FMM",
-        "mtn_ci": "FMM",
-        "orange_ci": "FMM",
-        "wave_sn": "FMM",
-        "orange_sn": "FMM",
-    }
-
-    account_bank = network_bank_map.get(network.lower(), "MPS")
-
-    return await create_transfer(
-        reference=reference,
-        amount=amount,
-        currency=currency,
-        beneficiary_name=beneficiary_name,
-        account_number=phone_number,
-        account_bank=account_bank,
-        narration=narration,
-    )
-
-
 # =====================================================================
 #  BANK LIST
 # =====================================================================
 
-async def get_banks(country: str = "NG") -> list[dict]:
+async def get_banks(country: str = "nigeria") -> list[dict]:
     """Get list of banks for a country."""
-    result = await _request("GET", f"/banks/{country.upper()}")
+    result = await _request("GET", f"/bank", {"country": country.lower()})
 
-    if result.get("status") == "success" and result.get("data"):
+    if result.get("status") is True and result.get("data"):
         return [
             {"name": b.get("name", ""), "code": b.get("code", "")}
             for b in result["data"]
@@ -513,15 +448,13 @@ async def get_banks(country: str = "NG") -> list[dict]:
 
 
 async def resolve_account(account_number: str, bank_code: str) -> dict:
-    """Verify/resolve a bank account."""
-    payload = {
-        "account_number": account_number,
-        "account_bank": bank_code,
-    }
+    """Verify/resolve a bank account number."""
+    result = await _request(
+        "GET", "/bank/resolve",
+        {"account_number": account_number, "bank_code": bank_code},
+    )
 
-    result = await _request("POST", "/accounts/resolve", payload)
-
-    if result.get("status") == "success" and result.get("data"):
+    if result.get("status") is True and result.get("data"):
         data = result["data"]
         return {
             "success": True,
@@ -541,44 +474,33 @@ async def resolve_account(account_number: str, bank_code: str) -> dict:
 
 def verify_webhook(raw_body: bytes, signature: str) -> bool:
     """
-    Verify Flutterwave webhook.
-    Flutterwave sends a 'verif-hash' header that should match your secret hash.
+    Verify Paystack webhook using HMAC SHA-512.
+    Paystack sends x-paystack-signature header.
     """
-    secret_hash = os.getenv("FLUTTERWAVE_WEBHOOK_HASH", FLW_WEBHOOK_HASH)
-    if not secret_hash or not signature:
-        logger.warning("Flutterwave webhook: missing hash or signature")
+    secret = os.getenv("PAYSTACK_SECRET_KEY", PSK_SECRET_KEY)
+    if not secret or not signature:
+        logger.warning("Paystack webhook: missing secret or signature")
         return False
-    return hmac.compare_digest(signature, secret_hash)
+
+    computed = hmac.new(
+        secret.encode("utf-8"),
+        raw_body,
+        hashlib.sha512,
+    ).hexdigest()
+
+    return hmac.compare_digest(computed, signature)
 
 
 # =====================================================================
-#  EXCHANGE RATE (live fetch)
+#  EXCHANGE RATE
 # =====================================================================
 
-async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> dict:
+def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> dict:
     """
-    Get live exchange rate from Flutterwave.
-    Falls back to static rates if API fails.
+    Convert between currencies using static rates.
+    Paystack doesn't have a public rates API, so we use static rates
+    that should be updated periodically.
     """
-    try:
-        result = await _request("GET", f"/rates", {
-            "from": from_currency.upper(),
-            "to": to_currency.upper(),
-            "amount": amount,
-        })
-
-        if result.get("status") == "success" and result.get("data"):
-            data = result["data"]
-            return {
-                "success": True,
-                "rate": float(data.get("rate", 0)),
-                "source": data.get("source", {}),
-                "destination": data.get("destination", {}),
-            }
-    except Exception as e:
-        logger.error(f"Exchange rate API error: {e}")
-
-    # Fallback to static rates
     from_rate = RATES_TO_NGN.get(from_currency.upper(), 1.0)
     to_rate = RATES_TO_NGN.get(to_currency.upper(), 1.0)
     if to_rate > 0:

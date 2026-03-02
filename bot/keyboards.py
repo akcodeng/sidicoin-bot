@@ -548,7 +548,7 @@ def fund_method_keyboard(country_code: str) -> InlineKeyboardMarkup:
     """Dynamic funding method based on user's country."""
     buttons = []
 
-    from services.flutterwave import get_country_config
+    from services.paystack import get_country_config
     config = get_country_config(country_code)
     methods = config.get("methods", ["card"])
 

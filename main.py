@@ -142,12 +142,12 @@ app = FastAPI(title="Sidicoin Bot", version="1.0.0", lifespan=lifespan)
 # ── Mount routes ──────────────────────────────────────────────
 from routes.telegram import router as telegram_router
 from routes.korapay_webhook import router as korapay_router
-from routes.flutterwave_webhook import router as flutterwave_router
+from routes.paystack_webhook import router as paystack_router
 from routes.admin import router as admin_router
 
 app.include_router(telegram_router)
 app.include_router(korapay_router)
-app.include_router(flutterwave_router)
+app.include_router(paystack_router)
 app.include_router(admin_router)
 
 
