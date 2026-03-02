@@ -105,6 +105,17 @@ DEFAULT_USER = {
     "escrow_rating": 5.0,  # Trust score (1-5)
     "escrow_completed": 0,
     "escrow_disputed": 0,
+    # OTP / security
+    "otp_failures": 0,
+    "last_otp_sent": 0,
+    "last_financial_action": 0,  # Session timeout tracking
+    # Merchant
+    "is_merchant": False,
+    "merchant_name": "",
+    "merchant_fee_rate": 0.02,  # 2% merchant fee
+    "merchant_approved": False,
+    "merchant_total_received": 0.0,
+    "merchant_total_fees": 0.0,
     # Anti-fraud fields
     "device_fingerprint": "",
     "flagged_multi_account": False,

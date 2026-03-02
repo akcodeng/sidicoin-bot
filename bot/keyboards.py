@@ -571,3 +571,32 @@ def fund_method_keyboard(country_code: str) -> InlineKeyboardMarkup:
 
     buttons.append([InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# =====================================================================
+#  MERCHANT
+# =====================================================================
+
+def merchant_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="\U0001f517 Generate Payment Link", callback_data="merchant_create_link")],
+        [InlineKeyboardButton(text="\U0001f4ca My Stats", callback_data="merchant_stats")],
+        [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
+    ])
+
+
+def merchant_apply_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="\U0001f4dd Apply for Merchant", callback_data="merchant_apply")],
+        [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
+    ])
+
+
+def merchant_pay_confirm_keyboard(merchant_id: str, amount: float, ref: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"\u2705 Pay {amount} SIDI",
+            callback_data=f"merchant_pay_{merchant_id}_{amount}_{ref}",
+        )],
+        [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
+    ])

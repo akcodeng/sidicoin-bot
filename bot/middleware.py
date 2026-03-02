@@ -60,6 +60,7 @@ class RateLimitMiddleware(BaseMiddleware):
     TX_CALLBACKS = (
         "send_confirm", "buy_proceed", "sell_confirm",
         "premium_upgrade",
+        "escrow_fund_", "merchant_pay_",
     )
 
     async def __call__(
@@ -75,7 +76,10 @@ class RateLimitMiddleware(BaseMiddleware):
             should_limit = any(text_lower.startswith(cmd) for cmd in self.TX_COMMANDS)
 
         elif isinstance(event, CallbackQuery) and event.from_user and event.data:
-            should_limit = event.data in self.TX_CALLBACKS
+            should_limit = any(
+                event.data == cb or event.data.startswith(cb)
+                for cb in self.TX_CALLBACKS
+            )
 
         if should_limit:
             user_id = event.from_user.id
