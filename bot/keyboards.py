@@ -120,6 +120,9 @@ def send_large_confirm_keyboard() -> InlineKeyboardMarkup:
 def after_send_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="\U0001f4c4 Download Receipt", callback_data="receipt_download"),
+        ],
+        [
             InlineKeyboardButton(text="\U0001f4e4 Send More", callback_data="cmd_send"),
             InlineKeyboardButton(text="\U0001f48e Wallet", callback_data="cmd_balance"),
         ],
@@ -163,6 +166,9 @@ def buy_payment_keyboard() -> InlineKeyboardMarkup:
 def after_buy_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="\U0001f4c4 Download Receipt", callback_data="receipt_download"),
+        ],
+        [
             InlineKeyboardButton(text="\U0001f4e4 Send SIDI", callback_data="cmd_send"),
             InlineKeyboardButton(text="\U0001f48e Wallet", callback_data="cmd_balance"),
         ],
@@ -192,6 +198,9 @@ def sell_bank_confirm_keyboard() -> InlineKeyboardMarkup:
 
 def after_sell_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="\U0001f4c4 Download Receipt", callback_data="receipt_download"),
+        ],
         [
             InlineKeyboardButton(text="\U0001f48e Wallet", callback_data="cmd_balance"),
             InlineKeyboardButton(text="\U0001f4cb History", callback_data="cmd_history"),

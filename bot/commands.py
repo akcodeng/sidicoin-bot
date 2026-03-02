@@ -37,6 +37,7 @@ from utils.formatting import (
     fmt_number, sidi_to_naira, naira_to_sidi, fmt_sidi, fmt_naira,
     fmt_timestamp, fmt_date, fmt_relative_time, time_greeting,
     generate_receipt, generate_mini_receipt, generate_tx_reference,
+    generate_downloadable_receipt,
     progress_bar, streak_fire,
     DIVIDER, THIN_DIVIDER, BRAND, STAR, SIDI_PRICE_NGN,
 )
@@ -985,6 +986,57 @@ async def cmd_help(message: Message):
 
 
 # =====================================================================
+#  /convert  --  Quick SIDI calculator
+# =====================================================================
+
+@router.message(Command("convert", "calc"))
+async def cmd_convert(message: Message):
+    """Quick SIDI/NGN converter."""
+    try:
+        text = message.text.strip()
+        parts = text.split()
+
+        if len(parts) < 2:
+            await message.answer(
+                f"{STAR} <b>SIDI Calculator</b>\n\n"
+                f"Quick convert between SIDI and Naira.\n\n"
+                f"  <code>/convert 500</code>       \u2192  500 SIDI in Naira\n"
+                f"  <code>/convert 5000 NGN</code>  \u2192  {fmt_naira(5000)} in SIDI\n"
+                f"  <code>/convert 10k</code>       \u2192  10,000 SIDI in Naira",
+                reply_markup=home_button_keyboard(),
+            )
+            return
+
+        amount_text = " ".join(parts[1:])
+        valid, sidi_amount = is_valid_amount(amount_text)
+
+        if not valid:
+            await message.answer(
+                f"Could not parse that amount. Try: <code>/convert 500</code> {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            return
+
+        naira = sidi_to_naira(sidi_amount)
+        from utils.formatting import sidi_to_usd, fmt_usd
+        usd = sidi_to_usd(sidi_amount)
+
+        await message.answer(
+            f"{STAR} <b>Conversion Result</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f48e <b>{fmt_number(sidi_amount)} SIDI</b>\n\n"
+            f"  \U0001f4b5 = {fmt_naira(naira)}\n"
+            f"  \U0001f4b2 = {fmt_usd(usd)}\n\n"
+            f"  Rate: 1 SIDI = {fmt_naira(SIDI_PRICE_NGN)}\n\n"
+            f"{DIVIDER}",
+            reply_markup=home_button_keyboard(),
+        )
+    except Exception as e:
+        logger.error(f"/convert error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}")
+
+
+# =====================================================================
 #  /about
 # =====================================================================
 
@@ -1720,6 +1772,90 @@ async def cb_send_cancel(callback: CallbackQuery):
 
 
 # =====================================================================
+#  DOWNLOADABLE RECEIPT
+# =====================================================================
+
+@router.callback_query(F.data == "receipt_download")
+async def cb_receipt_download(callback: CallbackQuery):
+    """Generate and send a downloadable .txt receipt file for the last transaction."""
+    try:
+        import io
+        from aiogram.types import BufferedInputFile
+
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("No wallet found")
+            return
+
+        txns = user.get("transactions", [])
+        if not txns or not isinstance(txns, list):
+            await callback.answer("No transactions found")
+            return
+
+        # Get the most recent transaction
+        last_tx = txns[-1] if txns else None
+        if not last_tx:
+            await callback.answer("No recent transaction")
+            return
+
+        tx_type = last_tx.get("type", "Unknown")
+        amount = float(last_tx.get("amount", 0))
+        ref = last_tx.get("reference", "N/A")
+        description = last_tx.get("description", "")
+        other_user = last_tx.get("other_username", "")
+
+        # Determine sender/recipient based on tx type
+        username = user.get("username", "")
+        if tx_type == "send":
+            sender = username
+            recipient = other_user or description.replace("Sent to @", "")
+        elif tx_type == "receive":
+            sender = other_user or description.replace("Received from @", "")
+            recipient = username
+        elif tx_type == "buy":
+            sender = "Korapay"
+            recipient = username
+        elif tx_type == "sell":
+            sender = username
+            recipient = description or "Bank Account"
+        else:
+            sender = username
+            recipient = other_user or "N/A"
+
+        fee = float(last_tx.get("fee", 0))
+        bank_info = ""
+        if tx_type in ("sell", "cashout"):
+            bank_info = description
+
+        # Generate the downloadable receipt text
+        receipt_text = generate_downloadable_receipt(
+            tx_type=tx_type.title(),
+            sender=sender,
+            recipient=recipient,
+            sidi_amount=amount,
+            fee=fee,
+            reference=ref,
+            bank_info=bank_info,
+        )
+
+        # Create file buffer
+        file_bytes = receipt_text.encode("utf-8")
+        filename = f"sidicoin_receipt_{ref}.txt"
+        doc = BufferedInputFile(file=file_bytes, filename=filename)
+
+        await callback.message.answer_document(
+            document=doc,
+            caption=f"{STAR} Your Sidicoin receipt \u2014 Ref: <code>{ref}</code>",
+            parse_mode="HTML",
+        )
+        await callback.answer("Receipt ready!")
+
+    except Exception as e:
+        logger.error(f"receipt_download error: {e}", exc_info=True)
+        await callback.answer("Could not generate receipt. Try again.")
+
+
+# =====================================================================
 #  BUY FLOW CALLBACKS
 # =====================================================================
 
@@ -2411,10 +2547,16 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         result = await verify_bank_account(bank_code, account_number)
 
         if not result.get("success"):
+            error_msg = result.get("message", "Unknown error")
             try:
                 await loading.edit_text(
-                    f"Could not verify account: {result.get('message', 'Unknown error')}.\n"
-                    f"Check and try again {STAR}",
+                    f"\u274c <b>Account Verification Failed</b>\n\n"
+                    f"{error_msg}\n\n"
+                    f"Please check:\n"
+                    f"\u2022 Your bank name is correct\n"
+                    f"\u2022 Your account number is 10 digits\n"
+                    f"\u2022 The account is active\n\n"
+                    f"Enter your account number again or /cancel {STAR}",
                     reply_markup=cancel_keyboard(),
                 )
             except TelegramBadRequest:
@@ -2483,9 +2625,13 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
 
         result = await verify_bank_account(bank_code, account_number)
         if not result.get("success"):
+            error_msg = result.get("message", "Unknown error")
             try:
                 await loading.edit_text(
-                    f"Could not verify account. Check and try again {STAR}",
+                    f"\u274c <b>Verification Failed</b>\n\n"
+                    f"{error_msg}\n\n"
+                    f"Check your bank and account number, "
+                    f"then try again {STAR}",
                     reply_markup=cancel_keyboard(),
                 )
             except TelegramBadRequest:

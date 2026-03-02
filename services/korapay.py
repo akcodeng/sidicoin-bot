@@ -110,9 +110,12 @@ async def create_bank_transfer_charge(
     if len(reference) < 8:
         reference = f"SIDI-{reference}"
 
+    # Per Korapay docs: amount is Number type
+    charge_amount = round(float(amount), 2)
+
     payload = {
         "reference": reference,
-        "amount": int(amount),  # Korapay expects integer for NGN
+        "amount": charge_amount,
         "currency": "NGN",
         "narration": narration,
         "notification_url": "https://coin.sidihost.sbs/webhook/korapay",
@@ -123,19 +126,26 @@ async def create_bank_transfer_charge(
         "merchant_bears_cost": False,
     }
 
+    logger.info(f"Creating bank transfer charge: ref={reference}, amount={charge_amount}")
+
     result = await _request("POST", "/charges/bank_transfer", payload)
 
     if result.get("status") is True and result.get("data"):
         data = result["data"]
         bank = data.get("bank_account", {})
+        fee = float(data.get("fee", 0))
+        vat = float(data.get("vat", 0))
+        total_fee = fee + vat
+
         return {
             "success": True,
             "bank_name": bank.get("bank_name", "Wema Bank"),
             "account_number": bank.get("account_number", ""),
             "account_name": bank.get("account_name", "Sidicoin"),
+            "bank_code": bank.get("bank_code", ""),
             "reference": data.get("reference", reference),
-            "amount": float(data.get("amount_expected", amount)),
-            "fee": float(data.get("fee", 0)),
+            "amount": float(data.get("amount_expected", charge_amount)),
+            "fee": total_fee,
             "expiry": bank.get("expiry_date_in_utc", ""),
             "status": data.get("status", "processing"),
         }
@@ -196,23 +206,35 @@ async def verify_bank_account(bank_code: str, account_number: str) -> dict:
     payload = {
         "bank": bank_code,
         "account": account_number,
-        "currency": "NGN",
+        "currency": "NG",
     }
+
+    logger.info(f"Resolving bank account: bank={bank_code}, account={account_number}")
 
     result = await _request("POST", "/misc/banks/resolve", payload)
 
+    logger.info(f"Resolve result: status={result.get('status')}, data={result.get('data')}")
+
     if result.get("status") is True and result.get("data"):
         data = result["data"]
-        return {
-            "success": True,
-            "account_name": data.get("account_name", ""),
-            "account_number": data.get("account_number", account_number),
-            "bank_code": bank_code,
-        }
+        account_name = data.get("account_name", "")
+        if account_name:
+            return {
+                "success": True,
+                "account_name": account_name,
+                "account_number": data.get("account_number", account_number),
+                "bank_name": data.get("bank_name", ""),
+                "bank_code": data.get("bank_code", bank_code),
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Account name not returned. Check account number.",
+            }
 
     return {
         "success": False,
-        "message": result.get("message", "Could not verify account"),
+        "message": result.get("message", "Could not verify account. Check bank code and account number."),
     }
 
 
@@ -232,17 +254,19 @@ async def process_payout(
     Send money to a bank account via Korapay disbursement.
     POST /transactions/disburse
     """
+    # Per Korapay docs: destination.amount is Number type, two decimal places
+    payout_amount = round(float(amount), 2)
+
     payload = {
         "reference": reference,
         "destination": {
             "type": "bank_account",
-            "amount": str(int(amount)),  # Korapay expects string amount
+            "amount": payout_amount,
             "currency": "NGN",
             "narration": narration,
             "bank_account": {
                 "bank": bank_code,
                 "account": account_number,
-                "account_name": account_name,
             },
             "customer": {
                 "name": account_name,
@@ -250,6 +274,8 @@ async def process_payout(
             },
         },
     }
+
+    logger.info(f"Payout request: ref={reference}, amount={payout_amount}, bank={bank_code}, acct={account_number}")
 
     result = await _request("POST", "/transactions/disburse", payload)
 

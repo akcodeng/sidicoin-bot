@@ -206,6 +206,57 @@ def generate_mini_receipt(tx_type: str, amount: float, ref: str) -> str:
     )
 
 
+def generate_downloadable_receipt(
+    tx_type: str,
+    sender: str,
+    recipient: str,
+    sidi_amount: float,
+    fee: float,
+    reference: str,
+    bank_info: str = "",
+    status: str = "Confirmed",
+) -> str:
+    """
+    Generate a plain-text receipt for file download.
+    This is a .txt that users can save/share outside Telegram.
+    """
+    naira = sidi_to_naira(sidi_amount)
+    timestamp = fmt_timestamp()
+    fee_str = "Free" if fee == 0 else f"N{fmt_number(fee)}"
+    naira_str = f"N{fmt_number(naira)}"
+
+    lines = [
+        "",
+        "  ================================================",
+        "       SIDICOIN - TRANSACTION RECEIPT",
+        "  ================================================",
+        "",
+        f"  Type:        {tx_type}",
+        f"  From:        @{sender}",
+        f"  To:          @{recipient}",
+        f"  Amount:      {fmt_number(sidi_amount)} SIDI",
+        f"  Value:       {naira_str}",
+        f"  Fee:         {fee_str}",
+    ]
+
+    if bank_info:
+        lines.append(f"  Bank:        {bank_info}")
+
+    lines.extend([
+        f"  Status:      {status}",
+        f"  Date:        {timestamp}",
+        f"  Reference:   {reference}",
+        "",
+        "  ================================================",
+        "  Sidicoin - Instant money transfers across Africa",
+        "  https://coin.sidihost.sbs",
+        "  ================================================",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
 # =====================================================================
 #  REFERENCE GENERATOR
 # =====================================================================
