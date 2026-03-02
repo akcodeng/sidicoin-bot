@@ -23,6 +23,7 @@ from services.redis import (
     credit_referrer,
     increment_stat,
     clear_pending_action,
+    unlock_referral_earnings_on_tx,
 )
 from services.notifications import notify_user, notify_admin
 from utils.formatting import (
@@ -198,6 +199,9 @@ async def _process_buy_payment(bot, telegram_id: str, pending: dict, reference: 
 
     logger.info(f"Buy payment processed: {telegram_id} +{sidi_amount} SIDI (₦{amount_paid})")
 
+    # Unlock referral earnings when user makes a transaction (buy)
+    unlock_referral_earnings_on_tx(telegram_id)
+
     # Credit referrer +10 SIDI for purchase
     if user and user.get("referred_by"):
         try:
@@ -250,7 +254,7 @@ async def _process_premium_payment(bot, telegram_id: str, pending: dict, referen
         f"  Your benefits (30 days):\n\n"
         f"  \u26a1 500,000 SIDI daily limit\n"
         f"  \U0001f4b0 0.8% reduced fees\n"
-        f"  \U0001f48e 25 SIDI daily check-in\n"
+        f"  \U0001f48e 5 SIDI daily check-in\n"
         f"  {STAR} Premium badge\n"
         f"  \U0001f3c6 Priority support\n\n"
         f"{DIVIDER}\n\n"
