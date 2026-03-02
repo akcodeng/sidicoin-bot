@@ -31,6 +31,8 @@ from utils.formatting import (
     fmt_naira,
     generate_tx_reference,
     generate_receipt,
+    STAR,
+    DIVIDER,
 )
 
 router = APIRouter()
@@ -180,13 +182,17 @@ async def _process_buy_payment(bot, telegram_id: str, pending: dict, reference: 
     user = get_user(telegram_id)
     new_balance = float(user.get("sidi_balance", 0)) if user else sidi_amount
 
-    # Notify user
+    # Notify user with beautiful confirmation
     from bot.keyboards import after_buy_keyboard
     text = (
-        f"✦ <b>Payment Confirmed!</b>\n\n"
-        f"+<b>{fmt_number(sidi_amount)} SIDI</b> added to your wallet\n"
-        f"New Balance: <b>{fmt_number(new_balance)} SIDI</b> ({fmt_naira(sidi_to_naira(new_balance))})\n\n"
-        f"Your SIDI is ready to use ✦"
+        f"{STAR} <b>Payment Confirmed!</b>\n\n"
+        f"{DIVIDER}\n\n"
+        f"  \U0001f4b3 +<b>{fmt_number(sidi_amount)} SIDI</b>\n"
+        f"  \U0001f4b5 Paid: {fmt_naira(amount_paid)}\n"
+        f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b>\n"
+        f"       ({fmt_naira(sidi_to_naira(new_balance))})\n\n"
+        f"{DIVIDER}\n\n"
+        f"  Your SIDI is ready to use {STAR}"
     )
     await notify_user(bot, telegram_id, text, reply_markup=after_buy_keyboard())
 
@@ -235,18 +241,20 @@ async def _process_premium_payment(bot, telegram_id: str, pending: dict, referen
     increment_stat("premium_subscriptions", 1)
     increment_stat("daily_volume_ngn", 1500)
 
-    # Notify user
+    # Notify user with beautiful premium message
     from bot.keyboards import home_keyboard
     text = (
-        f"✦ <b>Premium Activated!</b>\n\n"
-        f"Welcome to Sidicoin Premium ✦\n\n"
-        f"Your benefits are now active for 30 days:\n"
-        f"• 500,000 SIDI daily limit\n"
-        f"• 0.8% reduced fees\n"
-        f"• 25 SIDI daily check-in\n"
-        f"• ✦ Premium badge\n"
-        f"• Priority support\n\n"
-        f"Thank you for upgrading ✦"
+        f"{STAR} <b>Premium Activated!</b>\n\n"
+        f"Welcome to Sidicoin Premium {STAR}\n\n"
+        f"{DIVIDER}\n\n"
+        f"  Your benefits (30 days):\n\n"
+        f"  \u26a1 500,000 SIDI daily limit\n"
+        f"  \U0001f4b0 0.8% reduced fees\n"
+        f"  \U0001f48e 25 SIDI daily check-in\n"
+        f"  {STAR} Premium badge\n"
+        f"  \U0001f3c6 Priority support\n\n"
+        f"{DIVIDER}\n\n"
+        f"  Thank you for upgrading {STAR}"
     )
     await notify_user(bot, telegram_id, text, reply_markup=home_keyboard())
 
