@@ -386,7 +386,7 @@ async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient
     await message.answer(confirm_text, reply_markup=keyboard)
 
 
-# ═══════════════════════════════════════════════════════════════
+# ═════════════════════════════════��═════════════════════════════
 # /buy
 # ═══════════════════════════════════════════════════════════════
 
@@ -1027,7 +1027,7 @@ async def cmd_admin_debit(message: Message, bot: Bot):
 
     add_transaction(user["telegram_id"], {
         "type": "debit",
-        "amount": -amount,
+        "amount": amount,
         "description": "Admin debit",
         "timestamp": int(time.time()),
         "reference": generate_tx_reference(),
@@ -2359,7 +2359,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         except TelegramBadRequest:
             await message.answer(confirm_text, reply_markup=sell_confirm_keyboard())
 
-    # ── Settings bank update flow ──────────────────────────
+    # ── Settings bank update flow ──────────────────���───────
     elif action == "settings_bank_name":
         bank_code = get_bank_code(text)
         if not bank_code:

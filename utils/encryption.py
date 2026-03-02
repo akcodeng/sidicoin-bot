@@ -12,6 +12,12 @@ from cryptography.hazmat.backends import default_backend
 
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
+if not ENCRYPTION_KEY:
+    import logging
+    logging.getLogger("sidicoin.encryption").warning(
+        "ENCRYPTION_KEY not set! Private key encryption will be insecure."
+    )
+
 
 def _derive_key(passphrase: str) -> bytes:
     """Derive a 32-byte AES-256 key from the passphrase using SHA-256."""

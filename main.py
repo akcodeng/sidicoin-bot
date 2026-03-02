@@ -23,7 +23,11 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Suppress noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
 logger = logging.getLogger("sidicoin")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -46,6 +50,7 @@ def setup_scheduler():
         send_premium_expiry_alerts,
         send_reengagement_messages,
         send_streak_warnings,
+        reset_daily_stats,
     )
 
     # Every day at 9am WAT — daily check-in reminder
@@ -84,6 +89,15 @@ def setup_scheduler():
         replace_existing=True,
     )
 
+    # Midnight WAT — reset daily stats and archive
+    scheduler.add_job(
+        reset_daily_stats,
+        CronTrigger(hour=0, minute=0),
+        args=[bot],
+        id="reset_daily_stats",
+        replace_existing=True,
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -91,10 +105,11 @@ async def lifespan(app: FastAPI):
     from bot.handler import register_all_handlers
     from bot.middleware import BanCheckMiddleware, RateLimitMiddleware
 
-    # Register middleware
+    # Register middleware (order: ban check first, then rate limit)
     dp.message.middleware(BanCheckMiddleware())
     dp.callback_query.middleware(BanCheckMiddleware())
     dp.message.middleware(RateLimitMiddleware())
+    dp.callback_query.middleware(RateLimitMiddleware())
 
     # Register all bot handlers
     register_all_handlers(dp)
@@ -145,7 +160,22 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Health check with Redis connectivity verification."""
+    redis_ok = False
+    try:
+        from services.redis import redis
+        redis.ping()
+        redis_ok = True
+    except Exception:
+        pass
+
+    status = "ok" if redis_ok else "degraded"
+    return {
+        "status": status,
+        "redis": "connected" if redis_ok else "error",
+        "domain": "coin.sidihost.sbs",
+        "version": "1.0.0",
+    }
 
 
 if __name__ == "__main__":

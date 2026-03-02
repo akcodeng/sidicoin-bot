@@ -211,3 +211,50 @@ async def notify_admin(bot: Bot, text: str) -> bool:
     if not admin_id:
         return False
     return await _safe_send(bot, admin_id, text)
+
+
+async def reset_daily_stats(bot: Bot):
+    """
+    Reset daily counters at midnight WAT.
+    Archives yesterday's stats before zeroing.
+    """
+    logger.info("Running daily stats reset")
+    try:
+        from services.redis import get_all_stats, redis, increment_stat
+        stats = get_all_stats()
+
+        # Archive yesterday's stats
+        yesterday = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400 + 3600))
+        daily_volume = stats.get("daily_volume_ngn", 0)
+        daily_tx = stats.get("daily_tx_count", 0)
+
+        if daily_volume > 0 or daily_tx > 0:
+            redis.hset(f"archive_{yesterday}", mapping={
+                "volume_ngn": str(daily_volume),
+                "tx_count": str(daily_tx),
+            })
+            redis.expire(f"archive_{yesterday}", 90 * 86400)  # Keep 90 days
+
+        # Reset daily counters
+        redis.hset("stats", mapping={
+            "daily_volume_ngn": "0",
+            "daily_tx_count": "0",
+        })
+
+        logger.info(f"Daily stats reset. Yesterday: vol={daily_volume}, tx={daily_tx}")
+
+        # Notify admin with daily summary
+        import os
+        admin_id = os.getenv("ADMIN_TELEGRAM_ID", "")
+        if admin_id and (daily_volume > 0 or daily_tx > 0):
+            from utils.formatting import fmt_naira, fmt_number
+            await _safe_send(
+                bot, admin_id,
+                f"📊 <b>Daily Summary — {yesterday}</b>\n\n"
+                f"Volume: {fmt_naira(daily_volume)}\n"
+                f"Transactions: {fmt_number(daily_tx)}\n"
+                f"Total Holders: {fmt_number(stats.get('total_holders', 0))}\n"
+                f"Circulating: {fmt_number(stats.get('circulating_supply', 0))} SIDI"
+            )
+    except Exception as e:
+        logger.error(f"Daily stats reset error: {e}")

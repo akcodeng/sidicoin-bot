@@ -120,10 +120,30 @@ async def korapay_webhook(request: Request):
 async def _process_buy_payment(bot, telegram_id: str, pending: dict, reference: str, amount_paid: float):
     """Process a successful buy SIDI payment."""
     sidi_amount = float(pending.get("sidi_amount", 0))
+    expected_ngn = float(pending.get("ngn_amount", 0))
 
     if sidi_amount <= 0:
         logger.error(f"Invalid SIDI amount for buy payment: {sidi_amount}")
         return
+
+    # Verify payment amount matches expected (allow 1% tolerance for bank rounding)
+    if expected_ngn > 0 and amount_paid > 0:
+        tolerance = expected_ngn * 0.01
+        if abs(amount_paid - expected_ngn) > tolerance:
+            logger.warning(
+                f"Payment amount mismatch: expected ₦{expected_ngn}, got ₦{amount_paid} "
+                f"(ref={reference}, user={telegram_id})"
+            )
+            # Still process but notify admin of discrepancy
+            await notify_admin(
+                bot,
+                f"⚠️ Payment amount mismatch\n"
+                f"User: {telegram_id}\n"
+                f"Expected: ₦{fmt_number(expected_ngn)}\n"
+                f"Received: ₦{fmt_number(amount_paid)}\n"
+                f"Reference: {reference}\n"
+                f"SIDI credited: {fmt_number(sidi_amount)}",
+            )
 
     # Credit user
     success = update_balance(telegram_id, sidi_amount)

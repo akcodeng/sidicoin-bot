@@ -29,10 +29,14 @@ def clean_username(username: str) -> str:
 def is_valid_amount(text: str) -> tuple[bool, float]:
     """
     Parse and validate an amount string.
-    Accepts: '500', '500 SIDI', '₦12500', '12500 NGN'.
+    Accepts: '500', '500 SIDI', '₦12500', '12500 NGN', 'N5000', '5k', '5K SIDI'.
     Returns (is_valid, sidi_amount).
     """
     text = text.strip().upper()
+
+    # Handle shorthand multipliers: 5K -> 5000, 2.5K -> 2500
+    text = re.sub(r"(\d+(?:\.\d+)?)\s*K\b", lambda m: str(float(m.group(1)) * 1000), text)
+    text = re.sub(r"(\d+(?:\.\d+)?)\s*M\b", lambda m: str(float(m.group(1)) * 1_000_000), text)
 
     # Handle NGN/₦ prefixed amounts
     ngn_match = re.match(r"[₦N]?\s*([0-9,]+(?:\.\d{1,2})?)\s*(?:NGN|NAIRA)?$", text)
@@ -41,19 +45,23 @@ def is_valid_amount(text: str) -> tuple[bool, float]:
             naira = float(ngn_match.group(1).replace(",", ""))
             if naira <= 0:
                 return False, 0.0
+            if naira > 100_000_000:  # Sanity check: 100M NGN max
+                return False, 0.0
             sidi = naira / SIDI_PRICE_NGN
-            return True, sidi
+            return True, round(sidi, 2)
         except ValueError:
             return False, 0.0
 
     # Handle SIDI amounts
-    sidi_match = re.match(r"([0-9,]+(?:\.\d{1,2})?)\s*(?:SIDI)?$", text)
+    sidi_match = re.match(r"([0-9,]+(?:\.\d{1,2})?)\s*(?:SIDI|COIN)?$", text)
     if sidi_match:
         try:
             amount = float(sidi_match.group(1).replace(",", ""))
             if amount <= 0:
                 return False, 0.0
-            return True, amount
+            if amount > 10_000_000_000:  # Cannot exceed total supply
+                return False, 0.0
+            return True, round(amount, 2)
         except ValueError:
             return False, 0.0
 

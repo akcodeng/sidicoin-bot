@@ -8,6 +8,7 @@ import os
 import json
 import time
 import logging
+import functools
 from typing import Any, Optional
 
 from upstash_redis import Redis
@@ -18,6 +19,29 @@ UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
 
 redis = Redis(url=UPSTASH_REDIS_REST_URL, token=UPSTASH_REDIS_REST_TOKEN)
+
+
+def _retry(max_retries: int = 3, default=None):
+    """Decorator for retrying Redis operations with exponential backoff."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait = 0.1 * (2 ** attempt)
+                        time.sleep(wait)
+                        logger.warning(
+                            f"Redis retry {attempt + 1}/{max_retries} for {func.__name__}: {e}"
+                        )
+            logger.error(f"Redis {func.__name__} failed after {max_retries} retries: {last_error}")
+            return default
+        return wrapper
+    return decorator
 
 # ── Default user data template ─────────────────────────────────
 
@@ -69,35 +93,33 @@ def _rate_key(telegram_id: int | str) -> str:
 
 # ── User CRUD ──────────────────────────────────────────────────
 
+@_retry(max_retries=3, default=None)
 def get_user(telegram_id: int | str) -> Optional[dict]:
     """Fetch a user from Redis. Returns None if not found."""
-    try:
-        data = redis.get(_user_key(telegram_id))
-        if data is None:
-            return None
-        if isinstance(data, str):
-            return json.loads(data)
-        if isinstance(data, dict):
-            return data
+    data = redis.get(_user_key(telegram_id))
+    if data is None:
         return None
-    except Exception as e:
-        logger.error(f"Redis get_user error for {telegram_id}: {e}")
-        return None
+    if isinstance(data, str):
+        return json.loads(data)
+    if isinstance(data, dict):
+        return data
+    return None
 
 
+@_retry(max_retries=3, default=False)
 def save_user(telegram_id: int | str, user_data: dict) -> bool:
     """Save user data to Redis."""
-    try:
-        user_data["last_active"] = int(time.time())
-        redis.set(_user_key(telegram_id), json.dumps(user_data))
-        # Also add to all_users set
-        redis.sadd("all_users", str(telegram_id))
-        # Update leaderboard
-        redis.zadd("leaderboard", {str(telegram_id): float(user_data.get("sidi_balance", 0))})
-        return True
-    except Exception as e:
-        logger.error(f"Redis save_user error for {telegram_id}: {e}")
-        return False
+    user_data["last_active"] = int(time.time())
+    redis.set(_user_key(telegram_id), json.dumps(user_data))
+    # Also add to all_users set
+    redis.sadd("all_users", str(telegram_id))
+    # Update leaderboard
+    redis.zadd("leaderboard", {str(telegram_id): float(user_data.get("sidi_balance", 0))})
+    # Update username index for O(1) lookups
+    username = user_data.get("username", "")
+    if username:
+        redis.set(f"uname_{username.lower()}", str(telegram_id))
+    return True
 
 
 def user_exists(telegram_id: int | str) -> bool:
@@ -512,12 +534,39 @@ def get_all_user_ids() -> list[str]:
         return []
 
 
+def _update_username_index(telegram_id: int | str, username: str) -> None:
+    """Maintain a username -> telegram_id index for O(1) lookups."""
+    if username:
+        try:
+            redis.set(f"uname_{username.lower()}", str(telegram_id))
+        except Exception as e:
+            logger.error(f"Username index error: {e}")
+
+
 def find_user_by_username(username: str) -> Optional[dict]:
-    """Find a user by their Telegram username. Linear scan — cached in production."""
+    """
+    Find a user by their Telegram username.
+    Uses username index for O(1) lookup, falls back to linear scan.
+    """
     clean = username.lstrip("@").lower()
+    if not clean:
+        return None
+
+    # Try fast index lookup first
+    try:
+        uid = redis.get(f"uname_{clean}")
+        if uid:
+            user = get_user(str(uid))
+            if user and user.get("username", "").lower() == clean:
+                return user
+    except Exception:
+        pass
+
+    # Fallback: linear scan (updates index as it goes)
     for uid in get_all_user_ids():
         user = get_user(uid)
         if user and user.get("username", "").lower() == clean:
+            _update_username_index(uid, clean)
             return user
     return None
 

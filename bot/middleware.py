@@ -1,15 +1,16 @@
 """
-Aiogram middleware for ban checking and rate limiting.
+Aiogram middleware for ban checking, rate limiting, and activity tracking.
 Runs before every message and callback query handler.
 """
 
+import time
 import logging
 from typing import Any, Callable, Awaitable
 
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery, TelegramObject
 
-from services.redis import get_user, check_rate_limit
+from services.redis import get_user, check_rate_limit, save_user
 
 logger = logging.getLogger("sidicoin.middleware")
 
@@ -23,7 +24,6 @@ class BanCheckMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        # Extract user ID from either Message or CallbackQuery
         user_id = None
         if isinstance(event, Message) and event.from_user:
             user_id = event.from_user.id
@@ -40,11 +40,27 @@ class BanCheckMiddleware(BaseMiddleware):
                     await event.answer(ban_text, show_alert=True)
                 return  # Stop processing
 
+            # Update last_active timestamp (avoid saving on every single event
+            # to reduce Redis calls -- only update if stale by > 5 minutes)
+            if user:
+                last_active = int(user.get("last_active", 0))
+                now = int(time.time())
+                if now - last_active > 300:
+                    user["last_active"] = now
+                    save_user(user_id, user)
+
         return await handler(event, data)
 
 
 class RateLimitMiddleware(BaseMiddleware):
     """Rate limit: 10 transactions per hour per user."""
+
+    # Commands and callback actions that count as transactions
+    TX_COMMANDS = ("/send", "/buy", "/sell")
+    TX_CALLBACKS = (
+        "send_confirm", "buy_proceed", "sell_confirm",
+        "premium_upgrade",
+    )
 
     async def __call__(
         self,
@@ -52,17 +68,26 @@ class RateLimitMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        # Only rate-limit actual transaction commands, not all messages
-        if isinstance(event, Message) and event.text:
-            tx_commands = ["/send", "/buy", "/sell"]
+        should_limit = False
+
+        if isinstance(event, Message) and event.text and event.from_user:
             text_lower = event.text.lower().strip()
-            is_tx = any(text_lower.startswith(cmd) for cmd in tx_commands)
-            if is_tx and event.from_user:
-                if not check_rate_limit(event.from_user.id):
-                    await event.answer(
-                        "⚠️ You've reached the transaction limit (10/hour). "
-                        "Please wait a bit before trying again ✦"
-                    )
-                    return
+            should_limit = any(text_lower.startswith(cmd) for cmd in self.TX_COMMANDS)
+
+        elif isinstance(event, CallbackQuery) and event.from_user and event.data:
+            should_limit = event.data in self.TX_CALLBACKS
+
+        if should_limit:
+            user_id = event.from_user.id
+            if not check_rate_limit(user_id):
+                limit_text = (
+                    "You've reached the transaction limit (10/hour). "
+                    "Please wait a bit before trying again ✦"
+                )
+                if isinstance(event, Message):
+                    await event.answer(limit_text)
+                elif isinstance(event, CallbackQuery):
+                    await event.answer(limit_text, show_alert=True)
+                return
 
         return await handler(event, data)

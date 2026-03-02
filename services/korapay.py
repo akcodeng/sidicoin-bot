@@ -235,7 +235,7 @@ def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
         hashlib.sha512,
     ).hexdigest()
 
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(expected.lower(), signature.lower())
 
 
 # ── Common bank codes mapping ─────────────────────────────────
