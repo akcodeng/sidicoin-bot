@@ -22,7 +22,10 @@ def home_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="\U0001f381 Earn Free", callback_data="cmd_refer"),
         ],
         [
+            InlineKeyboardButton(text="\U0001f3ae Games", callback_data="cmd_game"),
             InlineKeyboardButton(text="\U0001f48e My Wallet", callback_data="cmd_balance"),
+        ],
+        [
             InlineKeyboardButton(text="\u2699\ufe0f Account", callback_data="cmd_settings"),
         ],
     ])
@@ -65,6 +68,7 @@ def onboarding_step3_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="\u2705 Daily Check-In", callback_data="cmd_checkin"),
+            InlineKeyboardButton(text="\U0001f3ae Play Games", callback_data="cmd_game"),
         ],
     ])
 
@@ -239,7 +243,7 @@ def refer_keyboard(referral_link: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 text="\U0001f4f2 Share Now",
                 switch_inline_query=(
-                    f"Join me on Sidicoin and get 80 SIDI free! "
+                    f"Join me on Sidicoin and get 10 SIDI (\u20a6250) free! "
                     f"Send money anywhere in Africa instantly. {referral_link}"
                 ),
             ),
@@ -341,6 +345,97 @@ def contacts_keyboard(contacts: list[dict]) -> InlineKeyboardMarkup:
         ])
     buttons.append([InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# =====================================================================
+#  GAMES
+# =====================================================================
+
+def game_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="\U0001fa99 Coin Flip", callback_data="game_coinflip"),
+            InlineKeyboardButton(text="\U0001f3b2 Dice Roll", callback_data="game_dice"),
+        ],
+        [
+            InlineKeyboardButton(text="\U0001f3b0 Lucky Number", callback_data="game_lucky"),
+        ],
+        [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
+    ])
+
+
+def coinflip_bet_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1 SIDI", callback_data="flip_bet_1"),
+            InlineKeyboardButton(text="2 SIDI", callback_data="flip_bet_2"),
+            InlineKeyboardButton(text="5 SIDI", callback_data="flip_bet_5"),
+        ],
+        [
+            InlineKeyboardButton(text="10 SIDI", callback_data="flip_bet_10"),
+            InlineKeyboardButton(text="Custom", callback_data="flip_bet_custom"),
+        ],
+        [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
+    ])
+
+
+def coinflip_choice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="\U0001f7e1 Heads", callback_data="flip_heads"),
+            InlineKeyboardButton(text="\U0001f535 Tails", callback_data="flip_tails"),
+        ],
+    ])
+
+
+def dice_bet_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1 SIDI", callback_data="dice_bet_1"),
+            InlineKeyboardButton(text="2 SIDI", callback_data="dice_bet_2"),
+            InlineKeyboardButton(text="5 SIDI", callback_data="dice_bet_5"),
+        ],
+        [
+            InlineKeyboardButton(text="10 SIDI", callback_data="dice_bet_10"),
+        ],
+        [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
+    ])
+
+
+def dice_choice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1", callback_data="dice_pick_1"),
+            InlineKeyboardButton(text="2", callback_data="dice_pick_2"),
+            InlineKeyboardButton(text="3", callback_data="dice_pick_3"),
+        ],
+        [
+            InlineKeyboardButton(text="4", callback_data="dice_pick_4"),
+            InlineKeyboardButton(text="5", callback_data="dice_pick_5"),
+            InlineKeyboardButton(text="6", callback_data="dice_pick_6"),
+        ],
+    ])
+
+
+def lucky_number_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1 SIDI", callback_data="lucky_bet_1"),
+            InlineKeyboardButton(text="2 SIDI", callback_data="lucky_bet_2"),
+            InlineKeyboardButton(text="5 SIDI", callback_data="lucky_bet_5"),
+        ],
+        [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
+    ])
+
+
+def after_game_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="\U0001f504 Play Again", callback_data="cmd_game"),
+            InlineKeyboardButton(text="\U0001f48e Wallet", callback_data="cmd_balance"),
+        ],
+        [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
+    ])
 
 
 # =====================================================================

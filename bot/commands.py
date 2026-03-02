@@ -7,6 +7,7 @@ Beautiful, consistent, and professional throughout.
 
 import os
 import time
+import random
 import logging
 
 from aiogram import Router, Bot, F
@@ -19,12 +20,17 @@ from services.redis import (
     get_balance, update_balance, transfer_sidi,
     add_transaction, get_transactions,
     set_pending_action, get_pending_action, clear_pending_action,
-    credit_referrer, activate_premium, check_premium_status,
+    credit_referrer, can_refer, activate_premium, check_premium_status,
     process_checkin, get_leaderboard, get_user_rank,
     get_all_user_ids, find_user_by_username,
     get_stat, get_all_stats, increment_stat,
     store_pending_payment, track_large_transfer, increment_rate_count,
     update_bank_details,
+    generate_device_fingerprint, check_multi_account,
+    flag_suspicious_account, is_account_flagged,
+    check_withdrawal_locks, unlock_referral_earnings_on_tx,
+    MAX_REFERRALS, WELCOME_BONUS_SIDI, WELCOME_BONUS_HOLD_DAYS,
+    DAILY_CHECKIN_FREE, DAILY_CHECKIN_PREMIUM,
 )
 from services.ton import create_wallet, format_wallet_address
 from services.korapay import (
@@ -58,6 +64,9 @@ from bot.keyboards import (
     help_keyboard, contacts_keyboard, cancel_keyboard,
     home_button_keyboard, onboarding_step1_keyboard,
     onboarding_step2_keyboard, onboarding_step3_keyboard,
+    game_menu_keyboard, coinflip_bet_keyboard, coinflip_choice_keyboard,
+    dice_bet_keyboard, dice_choice_keyboard, lucky_number_keyboard,
+    after_game_keyboard,
 )
 
 logger = logging.getLogger("sidicoin.commands")
@@ -156,6 +165,14 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             f"\u26a1 Setting up your Sidicoin wallet..."
         )
 
+        # Anti-fraud: generate fingerprint and check for multi-accounts
+        fingerprint = generate_device_fingerprint({
+            "first_name": from_user.first_name or "",
+            "last_name": from_user.last_name or "",
+            "language_code": from_user.language_code or "",
+        })
+        multi_check = check_multi_account(user_id, fingerprint)
+
         # Create TON wallet
         wallet_address, encrypted_key = create_wallet()
 
@@ -170,14 +187,34 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             referred_by=referred_by,
         )
 
-        # Credit referrer if applicable
+        # Store fingerprint in user data
+        user["device_fingerprint"] = fingerprint
+        if multi_check["is_suspicious"]:
+            user["flagged_multi_account"] = True
+            user["linked_accounts"] = multi_check["linked_accounts"]
+            save_user(user_id, user)
+            # Notify admin
+            await notify_admin(
+                bot,
+                f"\u26a0\ufe0f <b>MULTI-ACCOUNT DETECTED</b>\n\n"
+                f"New user: @{username} (ID: {user_id})\n"
+                f"Linked to: {', '.join(multi_check['linked_accounts'])}\n"
+                f"Reason: {multi_check['reason']}\n"
+                f"Action: Welcome bonus locked, withdrawals restricted"
+            )
+        else:
+            save_user(user_id, user)
+
+        # Credit referrer if applicable (with 5-referral cap)
         referrer_name_display = ""
         if referred_by:
             try:
                 referrer_id = int(referred_by)
-                if user_exists(referrer_id):
-                    credit_referrer(referrer_id, 50.0, "signup")
+                if user_exists(referrer_id) and can_refer(referrer_id):
+                    # Earnings are LOCKED until this new user makes a transaction
+                    credit_referrer(referrer_id, 10.0, "signup")
                     referrer = get_user(referrer_id)
+                    remaining_refs = MAX_REFERRALS - int(referrer.get("referral_count", 0))
                     if referrer:
                         referrer_name_display = referrer.get("full_name", "")
                         await notify_user(
@@ -185,9 +222,10 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
                             f"{STAR} <b>Referral Bonus!</b>\n\n"
                             f"<b>{_safe_escape(first_name)}</b> just joined Sidicoin "
                             f"through your referral link.\n\n"
-                            f"+<b>50 SIDI</b> ({fmt_naira(sidi_to_naira(50))}) "
-                            f"added to your wallet.\n\n"
-                            f"Keep sharing, keep earning {STAR}"
+                            f"+<b>10 SIDI</b> ({fmt_naira(sidi_to_naira(10))}) "
+                            f"will be added to your wallet once they "
+                            f"make their first transaction.\n\n"
+                            f"Referral slots remaining: <b>{remaining_refs}/{MAX_REFERRALS}</b> {STAR}"
                         )
             except (ValueError, Exception) as e:
                 logger.error(f"Referral credit error: {e}")
@@ -197,14 +235,14 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         if referred_by and referrer_name_display:
             referral_line = (
                 f"\n\U0001f91d You joined through <b>{_safe_escape(referrer_name_display)}</b>'s "
-                f"referral. You both earned bonus SIDI!\n"
+                f"referral!\n"
             )
         elif referred_by:
             referral_line = (
-                f"\n\U0001f91d You joined through a referral link. "
-                f"You both earned bonus SIDI!\n"
+                f"\n\U0001f91d You joined through a referral link!\n"
             )
 
+        welcome_naira = sidi_to_naira(WELCOME_BONUS_SIDI)
         welcome_text = (
             f"{STAR} <b>Welcome to Sidicoin, {_safe_escape(first_name)}</b>\n\n"
             f"Your wallet is ready.\n"
@@ -212,13 +250,13 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             f"{referral_line}\n"
             f"{DIVIDER}\n"
             f"  <b>Your Welcome Gift</b>\n\n"
-            f"  \U0001f48e  <b>80 SIDI</b>\n"
-            f"  \U0001f4b5  {fmt_naira(2000)}\n"
-            f"  \u2705  Ready to send, spend or save\n"
+            f"  \U0001f48e  <b>{fmt_number(WELCOME_BONUS_SIDI)} SIDI</b>\n"
+            f"  \U0001f4b5  {fmt_naira(welcome_naira)}\n"
+            f"  \U0001f512  Withdrawable after {WELCOME_BONUS_HOLD_DAYS} days\n"
             f"{DIVIDER}\n\n"
             f"Sidicoin lets you send money to anyone in Africa using "
             f"just their Telegram @username \u2014 instantly, for free.\n\n"
-            f"Type /help to see everything you can do {STAR}"
+            f"Let's get you started {STAR}"
         )
 
         try:
@@ -226,15 +264,19 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         except TelegramBadRequest:
             await message.answer(welcome_text, reply_markup=welcome_keyboard())
 
-        # Send onboarding step 1
+        # Send enhanced onboarding step 1
         onboard_text = (
-            f"{STAR} <b>Let's get you started</b>\n\n"
-            f"Sidicoin is the easiest way to move\n"
-            f"money across Africa.\n\n"
-            f"\u2022 No bank transfers\n"
-            f"\u2022 No long account numbers\n"
-            f"\u2022 No hidden fees\n\n"
-            f"Just a Telegram @username and you're done."
+            f"\U0001f44b <b>Welcome aboard!</b>\n\n"
+            f"Here's what makes Sidicoin special:\n\n"
+            f"  \u26a1 <b>Instant transfers</b>\n"
+            f"     Send money in under 2 seconds\n\n"
+            f"  \U0001f310 <b>Works across Africa</b>\n"
+            f"     Nigeria, Ghana, Kenya & more\n\n"
+            f"  \U0001f4b0 <b>Zero fees on transfers</b>\n"
+            f"     Send to any Telegram user for free\n\n"
+            f"  \U0001f512 <b>Bank-grade security</b>\n"
+            f"     Your money is protected 24/7\n\n"
+            f"Ready to explore?"
         )
         await message.answer(onboard_text, reply_markup=onboarding_step1_keyboard())
 
@@ -569,6 +611,7 @@ async def _show_history(target, user: dict, tx_filter: str):
         "referral_bonus": "\U0001f91d",
         "premium": "\u2b50",
         "debit": "\u26a0\ufe0f",
+        "game": "\U0001f3ae",
     }
 
     for tx in txns[:20]:
@@ -596,6 +639,10 @@ async def _show_history(target, user: dict, tx_filter: str):
             desc = tx.get("description", tx_type.title())
             lines.append(f"{icon} {desc}: +<b>{fmt_number(amount)} SIDI</b>")
             lines.append(f"     {time_str}")
+        elif tx_type == "game":
+            desc = tx.get("description", "Game")
+            lines.append(f"{icon} {desc}")
+            lines.append(f"     {fmt_naira(sidi_to_naira(amount))} \u2022 {time_str}")
         elif tx_type == "premium":
             lines.append(f"{icon} Premium activated")
             lines.append(f"     {time_str}")
@@ -678,19 +725,44 @@ async def cmd_refer(message: Message, bot: Bot):
         ref_link = f"https://t.me/{bot_username}?start=ref_{user['telegram_id']}"
         count = int(user.get("referral_count", 0))
         earned = float(user.get("referral_earnings", 0))
+        locked = float(user.get("referral_earnings_locked", 0))
+        unlocked = float(user.get("referral_earnings_unlocked", 0))
+        remaining_slots = max(0, MAX_REFERRALS - count)
+        slots_bar = progress_bar(count, MAX_REFERRALS)
+
+        # Check if user has reached the cap
+        cap_notice = ""
+        if count >= MAX_REFERRALS:
+            cap_notice = (
+                f"\n  \u26a0\ufe0f You've used all {MAX_REFERRALS} referral slots.\n"
+            )
+
+        locked_notice = ""
+        if locked > 0:
+            locked_notice = (
+                f"\n  \U0001f512 Locked: <b>{fmt_number(locked)} SIDI</b>\n"
+                f"     <i>Unlocks when your referrals transact</i>\n"
+            )
 
         text = (
             f"{STAR} <b>Refer & Earn</b>\n\n"
             f"Your link:\n<code>{ref_link}</code>\n\n"
             f"{DIVIDER}\n\n"
-            f"  <b>Rewards</b>\n\n"
-            f"  \U0001f91d Per signup    +<b>50 SIDI</b> ({fmt_naira(sidi_to_naira(50))})\n"
-            f"  \U0001f4b3 Per purchase  +<b>10 SIDI</b> ({fmt_naira(sidi_to_naira(10))})\n"
-            f"  \u267e\ufe0f  Forever       Earn on every purchase they make\n\n"
+            f"  <b>How It Works</b>\n\n"
+            f"  1. Share your link with friends\n"
+            f"  2. They sign up (you earn 10 SIDI)\n"
+            f"  3. When they make a transaction,\n"
+            f"     your earnings unlock for withdrawal\n\n"
+            f"  \U0001f91d Per signup    +<b>10 SIDI</b> ({fmt_naira(sidi_to_naira(10))})\n"
+            f"  \U0001f512 Locked until they transact\n"
+            f"  \U0001f465 Max {MAX_REFERRALS} referrals\n\n"
             f"{THIN_DIVIDER}\n\n"
             f"  <b>Your Stats</b>\n\n"
-            f"  \U0001f465 Referrals    <b>{count}</b>\n"
-            f"  \U0001f48e Earned       <b>{fmt_number(earned)} SIDI</b> ({fmt_naira(sidi_to_naira(earned))})\n\n"
+            f"  \U0001f465 Referrals    <b>{count}/{MAX_REFERRALS}</b> {slots_bar}\n"
+            f"  \U0001f48e Total earned  <b>{fmt_number(earned)} SIDI</b>\n"
+            f"  \u2705 Unlocked     <b>{fmt_number(unlocked)} SIDI</b>\n"
+            f"{locked_notice}"
+            f"{cap_notice}\n"
             f"{DIVIDER}"
         )
         await message.answer(text, reply_markup=refer_keyboard(ref_link))
@@ -766,7 +838,7 @@ async def cmd_premium(message: Message):
             f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
             f"  Daily Limit       50K      <b>500K</b>\n"
             f"  Buy/Sell Fee      1.5%     <b>0.8%</b>\n"
-            f"  Daily Check-in    10       <b>25 SIDI</b>\n"
+            f"  Daily Check-in    {fmt_number(DAILY_CHECKIN_FREE)}       <b>{fmt_number(DAILY_CHECKIN_PREMIUM)} SIDI</b>\n"
             f"  Badge             \u2014        <b>{STAR}</b>\n"
             f"  Priority Support  \u2014        <b>\u2705</b>\n\n"
             f"{DIVIDER}\n\n"
@@ -969,9 +1041,11 @@ async def cmd_help(message: Message):
         f"  /sell \u2014 Cash out to bank\n"
         f"  /history \u2014 Transaction history\n\n"
         f"  <b>\U0001f381 Earn</b>\n"
-        f"  /checkin \u2014 Daily free SIDI\n"
-        f"  /refer \u2014 Earn 50 SIDI per referral\n"
+        f"  /checkin \u2014 Daily {fmt_number(DAILY_CHECKIN_FREE)} SIDI (\u20a650/day)\n"
+        f"  /refer \u2014 Earn 10 SIDI per referral (max {MAX_REFERRALS})\n"
         f"  /premium \u2014 Lower fees & higher limits\n\n"
+        f"  <b>\U0001f3ae Games</b>\n"
+        f"  /game \u2014 Play games to win SIDI\n\n"
         f"  <b>\U0001f4ca Market</b>\n"
         f"  /price \u2014 SIDI price & market data\n"
         f"  /stats \u2014 Platform statistics\n"
@@ -1411,14 +1485,29 @@ async def cb_refer(callback: CallbackQuery, bot: Bot):
         ref_link = f"https://t.me/{bot_username}?start=ref_{user['telegram_id']}"
         count = int(user.get("referral_count", 0))
         earned = float(user.get("referral_earnings", 0))
+        locked = float(user.get("referral_earnings_locked", 0))
+        unlocked = float(user.get("referral_earnings_unlocked", 0))
+        remaining_slots = max(0, MAX_REFERRALS - count)
+
+        cap_line = ""
+        if count >= MAX_REFERRALS:
+            cap_line = f"\n  \u26a0\ufe0f All {MAX_REFERRALS} slots used\n"
+
+        locked_line = ""
+        if locked > 0:
+            locked_line = f"\n  \U0001f512 Locked: {fmt_number(locked)} SIDI (awaiting referral tx)\n"
+
         text = (
             f"{STAR} <b>Refer & Earn</b>\n\n"
             f"Your link:\n<code>{ref_link}</code>\n\n"
             f"{DIVIDER}\n\n"
-            f"  \U0001f91d Per signup    +<b>50 SIDI</b>\n"
-            f"  \U0001f4b3 Per purchase  +<b>10 SIDI</b>\n\n"
-            f"  \U0001f465 Referrals: <b>{count}</b>\n"
-            f"  \U0001f48e Earned: <b>{fmt_number(earned)} SIDI</b>\n\n"
+            f"  \U0001f91d Per signup    +<b>10 SIDI</b> (locked)\n"
+            f"  \U0001f513 Unlocks when they transact\n"
+            f"  \U0001f465 Max {MAX_REFERRALS} referrals\n\n"
+            f"  \U0001f465 Referrals: <b>{count}/{MAX_REFERRALS}</b>\n"
+            f"  \U0001f48e Earned: <b>{fmt_number(earned)} SIDI</b>\n"
+            f"  \u2705 Unlocked: <b>{fmt_number(unlocked)} SIDI</b>\n"
+            f"{locked_line}{cap_line}\n"
             f"{DIVIDER}"
         )
         await callback.message.edit_text(text, reply_markup=refer_keyboard(ref_link))
@@ -1561,7 +1650,7 @@ async def cb_premium(callback: CallbackQuery):
             f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
             f"  Daily Limit       50K      <b>500K</b>\n"
             f"  Buy/Sell Fee      1.5%     <b>0.8%</b>\n"
-            f"  Daily Check-in    10       <b>25 SIDI</b>\n"
+            f"  Daily Check-in    {fmt_number(DAILY_CHECKIN_FREE)}       <b>{fmt_number(DAILY_CHECKIN_PREMIUM)} SIDI</b>\n"
             f"  Badge             \u2014        <b>{STAR}</b>\n\n"
             f"{DIVIDER}\n\n"
             f"  <b>{fmt_naira(1500)} per month</b>"
@@ -1595,13 +1684,17 @@ async def cb_history_filter(callback: CallbackQuery):
 async def cb_onboard_2(callback: CallbackQuery):
     try:
         text = (
-            f"{STAR} <b>How It Works</b>\n\n"
-            f"Send money to anyone in Africa\n"
-            f"using just their Telegram username.\n\n"
-            f"<b>Example:</b>\n"
-            f"<code>/send @john 5000</code>\n\n"
-            f"That's it. No bank details.\n"
-            f"No routing numbers. No stress {STAR}"
+            f"\U0001f4a1 <b>How It Works</b>\n\n"
+            f"Sending money is as easy as texting:\n\n"
+            f"  <b>Step 1:</b> Type <code>/send @friend 100</code>\n"
+            f"  <b>Step 2:</b> Confirm the transfer\n"
+            f"  <b>Step 3:</b> Done! They receive instantly\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  \U0001f4b3 <b>Buy SIDI</b> with Naira via bank transfer\n"
+            f"  \U0001f4b0 <b>Cash out</b> to any Nigerian bank\n"
+            f"  \U0001f381 <b>Earn free</b> SIDI every day\n"
+            f"  \U0001f3ae <b>Play games</b> to win more SIDI\n\n"
+            f"No bank details needed. No stress {STAR}"
         )
         await callback.message.edit_text(text, reply_markup=onboarding_step2_keyboard())
         await callback.answer()
@@ -1612,13 +1705,18 @@ async def cb_onboard_2(callback: CallbackQuery):
 @router.callback_query(F.data == "onboard_3")
 async def cb_onboard_3(callback: CallbackQuery):
     try:
+        welcome_naira = sidi_to_naira(WELCOME_BONUS_SIDI)
         text = (
-            f"{STAR} <b>Get Started</b>\n\n"
-            f"You have <b>80 SIDI</b> ({fmt_naira(2000)}) ready to go.\n\n"
-            f"\U0001f4b3 <b>Buy more SIDI</b> with Naira\n"
-            f"\U0001f381 <b>Refer friends</b> to earn 50 SIDI each\n"
-            f"\u2705 <b>Check in daily</b> for free SIDI\n\n"
-            f"What's your first move?"
+            f"\U0001f680 <b>You're All Set!</b>\n\n"
+            f"You have <b>{fmt_number(WELCOME_BONUS_SIDI)} SIDI</b> ({fmt_naira(welcome_naira)}) ready to go.\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>Quick Actions:</b>\n\n"
+            f"  \U0001f4b3 <b>Buy SIDI</b> \u2014 top up with Naira\n"
+            f"  \U0001f381 <b>Refer friends</b> \u2014 earn 10 SIDI each (max {MAX_REFERRALS})\n"
+            f"  \u2705 <b>Daily check-in</b> \u2014 earn {fmt_number(DAILY_CHECKIN_FREE)} SIDI/day\n"
+            f"  \U0001f3ae <b>Play games</b> \u2014 win SIDI by playing\n\n"
+            f"{DIVIDER}\n\n"
+            f"What's your first move? {STAR}"
         )
         await callback.message.edit_text(text, reply_markup=onboarding_step3_keyboard())
         await callback.answer()
@@ -1675,6 +1773,9 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
             return
 
         increment_rate_count(callback.from_user.id)
+
+        # Unlock referral earnings when user transacts
+        unlock_referral_earnings_on_tx(callback.from_user.id)
 
         # Record transactions
         now = int(time.time())
@@ -1993,19 +2094,41 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
 
         user = get_user(callback.from_user.id)
 
-        # Check 24hr hold
-        hold_until = int(user.get("cashout_hold_until", 0))
-        if hold_until > int(time.time()):
-            remaining_secs = hold_until - int(time.time())
-            hours = remaining_secs // 3600
-            mins = (remaining_secs % 3600) // 60
-            await callback.message.edit_text(
-                f"\u23f3 <b>24-Hour Hold Active</b>\n\n"
-                f"Time remaining: <b>{hours}h {mins}m</b>\n\n"
-                f"This is a security measure for new accounts.\n"
-                f"Your SIDI is safe in your wallet {STAR}",
-                reply_markup=home_button_keyboard(),
-            )
+        # Check all withdrawal locks (welcome bonus hold, multi-account, banned)
+        lock_check = check_withdrawal_locks(callback.from_user.id)
+        if not lock_check["can_withdraw"]:
+            remaining_secs = lock_check["remaining_secs"]
+            reason = lock_check["reason"]
+            if reason == "welcome_hold":
+                days = remaining_secs // 86400
+                hours = (remaining_secs % 86400) // 3600
+                mins = (remaining_secs % 3600) // 60
+                await callback.message.edit_text(
+                    f"\U0001f512 <b>Welcome Bonus Protection</b>\n\n"
+                    f"Your welcome bonus is locked for\n"
+                    f"<b>{WELCOME_BONUS_HOLD_DAYS} days</b> as a security measure.\n\n"
+                    f"Time remaining: <b>{days}d {hours}h {mins}m</b>\n\n"
+                    f"This protects against fraud.\n"
+                    f"Your SIDI is safe in your wallet {STAR}",
+                    reply_markup=home_button_keyboard(),
+                )
+            elif reason == "cashout_hold":
+                hours = remaining_secs // 3600
+                mins = (remaining_secs % 3600) // 60
+                await callback.message.edit_text(
+                    f"\u23f3 <b>Cashout Hold Active</b>\n\n"
+                    f"Time remaining: <b>{hours}h {mins}m</b>\n\n"
+                    f"This is a security measure.\n"
+                    f"Your SIDI is safe in your wallet {STAR}",
+                    reply_markup=home_button_keyboard(),
+                )
+            else:
+                await callback.message.edit_text(
+                    f"\u26d4 <b>Withdrawal Restricted</b>\n\n"
+                    f"{reason}\n\n"
+                    f"Please contact support for help {STAR}",
+                    reply_markup=home_button_keyboard(),
+                )
             clear_pending_action(callback.from_user.id)
             await callback.answer()
             return
@@ -2349,6 +2472,379 @@ async def cb_cancel_action(callback: CallbackQuery):
 
 
 # =====================================================================
+#  GAMES
+# =====================================================================
+
+@router.message(Command("game", "games", "play"))
+async def cmd_game(message: Message):
+    """Show game menu."""
+    try:
+        user = get_user(message.from_user.id)
+        if not user:
+            await message.answer(f"Type /start to create your wallet first {STAR}")
+            return
+
+        balance = float(user.get("sidi_balance", 0))
+        text = (
+            f"\U0001f3ae <b>Sidicoin Games</b>\n\n"
+            f"Play to win SIDI! Choose a game:\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001fa99 <b>Coin Flip</b>\n"
+            f"     Heads or tails? 2x your bet!\n\n"
+            f"  \U0001f3b2 <b>Dice Roll</b>\n"
+            f"     Guess the number. 5x payout!\n\n"
+            f"  \U0001f3b0 <b>Lucky Number</b>\n"
+            f"     Pick 1-10. Match for 8x!\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Your balance: <b>{fmt_number(balance)} SIDI</b>\n"
+            f"  Min bet: 1 SIDI | Max bet: 50 SIDI"
+        )
+        await message.answer(text, reply_markup=game_menu_keyboard())
+
+    except Exception as e:
+        logger.error(f"/game error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}")
+
+
+@router.callback_query(F.data == "cmd_game")
+async def cb_game(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        text = (
+            f"\U0001f3ae <b>Sidicoin Games</b>\n\n"
+            f"Play to win SIDI! Choose a game:\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001fa99 <b>Coin Flip</b> \u2014 2x payout\n"
+            f"  \U0001f3b2 <b>Dice Roll</b> \u2014 5x payout\n"
+            f"  \U0001f3b0 <b>Lucky Number</b> \u2014 8x payout\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Balance: <b>{fmt_number(balance)} SIDI</b>"
+        )
+        await callback.message.edit_text(text, reply_markup=game_menu_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_game error: {e}")
+        await callback.answer("Something went wrong")
+
+
+# -- Coin Flip --
+
+@router.callback_query(F.data == "game_coinflip")
+async def cb_coinflip(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        text = (
+            f"\U0001fa99 <b>Coin Flip</b>\n\n"
+            f"Win <b>2x</b> your bet!\n"
+            f"50% chance to win.\n\n"
+            f"Balance: <b>{fmt_number(balance)} SIDI</b>\n\n"
+            f"Choose your bet amount:"
+        )
+        await callback.message.edit_text(text, reply_markup=coinflip_bet_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("flip_bet_"))
+async def cb_flip_bet(callback: CallbackQuery):
+    try:
+        bet_str = callback.data.replace("flip_bet_", "")
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+
+        if bet_str == "custom":
+            set_pending_action(callback.from_user.id, "game_coinflip_custom_bet")
+            await callback.message.edit_text(
+                f"\U0001fa99 <b>Coin Flip</b>\n\n"
+                f"Enter your bet amount (1-50 SIDI):",
+                reply_markup=cancel_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        bet = float(bet_str)
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet:
+            await callback.answer(f"Not enough SIDI. You have {fmt_number(balance)}", show_alert=True)
+            return
+
+        set_pending_action(callback.from_user.id, "game_coinflip_choose", {"bet": bet})
+        text = (
+            f"\U0001fa99 <b>Coin Flip</b>\n\n"
+            f"Bet: <b>{fmt_number(bet)} SIDI</b>\n"
+            f"Win: <b>{fmt_number(bet * 2)} SIDI</b>\n\n"
+            f"Choose your side:"
+        )
+        await callback.message.edit_text(text, reply_markup=coinflip_choice_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"flip_bet error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.in_({"flip_heads", "flip_tails"}))
+async def cb_flip_play(callback: CallbackQuery):
+    try:
+        action, data = get_pending_action(callback.from_user.id)
+        if action != "game_coinflip_choose" or not data:
+            await callback.answer("No active game")
+            return
+
+        user = get_user(callback.from_user.id)
+        bet = float(data["bet"])
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet:
+            await callback.answer("Not enough SIDI!", show_alert=True)
+            clear_pending_action(callback.from_user.id)
+            return
+
+        player_choice = "heads" if callback.data == "flip_heads" else "tails"
+        result = random.choice(["heads", "tails"])
+        won = player_choice == result
+
+        result_icon = "\U0001f7e1" if result == "heads" else "\U0001f535"
+        choice_icon = "\U0001f7e1" if player_choice == "heads" else "\U0001f535"
+
+        if won:
+            winnings = bet  # Net gain
+            update_balance(callback.from_user.id, winnings)
+            increment_stat("game_payouts", winnings)
+            user = get_user(callback.from_user.id)
+            new_balance = float(user.get("sidi_balance", 0))
+
+            text = (
+                f"\U0001fa99 <b>COIN FLIP</b>\n\n"
+                f"  You chose: {choice_icon} <b>{player_choice.title()}</b>\n"
+                f"  Result:    {result_icon} <b>{result.title()}</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \U0001f389 <b>YOU WON!</b>\n\n"
+                f"  +<b>{fmt_number(bet * 2)} SIDI</b> ({fmt_naira(sidi_to_naira(bet * 2))})\n"
+                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"{DIVIDER}"
+            )
+        else:
+            update_balance(callback.from_user.id, -bet)
+            increment_stat("game_revenue", bet)
+            user = get_user(callback.from_user.id)
+            new_balance = float(user.get("sidi_balance", 0))
+
+            text = (
+                f"\U0001fa99 <b>COIN FLIP</b>\n\n"
+                f"  You chose: {choice_icon} <b>{player_choice.title()}</b>\n"
+                f"  Result:    {result_icon} <b>{result.title()}</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \u274c <b>You lost</b>\n\n"
+                f"  -{fmt_number(bet)} SIDI\n"
+                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Better luck next time {STAR}"
+            )
+
+        add_transaction(callback.from_user.id, {
+            "type": "game",
+            "amount": bet * 2 if won else bet,
+            "description": f"Coin Flip {'Won' if won else 'Lost'}: {player_choice}",
+            "timestamp": int(time.time()),
+            "reference": f"GAME-FLIP-{int(time.time())}",
+        })
+        clear_pending_action(callback.from_user.id)
+        await callback.message.edit_text(text, reply_markup=after_game_keyboard())
+        await callback.answer("You won!" if won else "Better luck next time!")
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"flip_play error: {e}", exc_info=True)
+        await callback.answer("Something went wrong")
+
+
+# -- Dice Roll --
+
+@router.callback_query(F.data == "game_dice")
+async def cb_dice(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        text = (
+            f"\U0001f3b2 <b>Dice Roll</b>\n\n"
+            f"Guess the number (1-6).\n"
+            f"Win <b>5x</b> your bet!\n\n"
+            f"Balance: <b>{fmt_number(balance)} SIDI</b>\n\n"
+            f"Choose your bet:"
+        )
+        await callback.message.edit_text(text, reply_markup=dice_bet_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dice_bet_"))
+async def cb_dice_bet(callback: CallbackQuery):
+    try:
+        bet = float(callback.data.replace("dice_bet_", ""))
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet:
+            await callback.answer(f"Not enough SIDI. You have {fmt_number(balance)}", show_alert=True)
+            return
+
+        set_pending_action(callback.from_user.id, "game_dice_choose", {"bet": bet})
+        text = (
+            f"\U0001f3b2 <b>Dice Roll</b>\n\n"
+            f"Bet: <b>{fmt_number(bet)} SIDI</b>\n"
+            f"Win: <b>{fmt_number(bet * 5)} SIDI</b>\n\n"
+            f"Pick a number (1-6):"
+        )
+        await callback.message.edit_text(text, reply_markup=dice_choice_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dice_pick_"))
+async def cb_dice_play(callback: CallbackQuery):
+    try:
+        action, data = get_pending_action(callback.from_user.id)
+        if action != "game_dice_choose" or not data:
+            await callback.answer("No active game")
+            return
+
+        user = get_user(callback.from_user.id)
+        bet = float(data["bet"])
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet:
+            await callback.answer("Not enough SIDI!", show_alert=True)
+            clear_pending_action(callback.from_user.id)
+            return
+
+        player_pick = int(callback.data.replace("dice_pick_", ""))
+        result = random.randint(1, 6)
+        won = player_pick == result
+
+        dice_faces = ["\u2680", "\u2681", "\u2682", "\u2683", "\u2684", "\u2685"]
+
+        if won:
+            winnings = bet * 4  # Net gain (they keep bet + win 4x)
+            update_balance(callback.from_user.id, winnings)
+            increment_stat("game_payouts", winnings)
+            user = get_user(callback.from_user.id)
+            new_balance = float(user.get("sidi_balance", 0))
+
+            text = (
+                f"\U0001f3b2 <b>DICE ROLL</b>\n\n"
+                f"  You picked: <b>{player_pick}</b>\n"
+                f"  Result:     {dice_faces[result - 1]} <b>{result}</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \U0001f389 <b>JACKPOT!</b>\n\n"
+                f"  +<b>{fmt_number(bet * 5)} SIDI</b> ({fmt_naira(sidi_to_naira(bet * 5))})\n"
+                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"{DIVIDER}"
+            )
+        else:
+            update_balance(callback.from_user.id, -bet)
+            increment_stat("game_revenue", bet)
+            user = get_user(callback.from_user.id)
+            new_balance = float(user.get("sidi_balance", 0))
+
+            text = (
+                f"\U0001f3b2 <b>DICE ROLL</b>\n\n"
+                f"  You picked: <b>{player_pick}</b>\n"
+                f"  Result:     {dice_faces[result - 1]} <b>{result}</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \u274c <b>Not this time</b>\n\n"
+                f"  -{fmt_number(bet)} SIDI\n"
+                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Try again? The dice are waiting {STAR}"
+            )
+
+        add_transaction(callback.from_user.id, {
+            "type": "game",
+            "amount": bet * 5 if won else bet,
+            "description": f"Dice Roll {'Won' if won else 'Lost'}: picked {player_pick}, rolled {result}",
+            "timestamp": int(time.time()),
+            "reference": f"GAME-DICE-{int(time.time())}",
+        })
+        clear_pending_action(callback.from_user.id)
+        await callback.message.edit_text(text, reply_markup=after_game_keyboard())
+        await callback.answer("JACKPOT!" if won else f"Rolled {result}. Try again!")
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"dice_play error: {e}", exc_info=True)
+        await callback.answer("Something went wrong")
+
+
+# -- Lucky Number --
+
+@router.callback_query(F.data == "game_lucky")
+async def cb_lucky(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        text = (
+            f"\U0001f3b0 <b>Lucky Number</b>\n\n"
+            f"A number from 1-10 will be drawn.\n"
+            f"Match it to win <b>8x</b> your bet!\n\n"
+            f"Balance: <b>{fmt_number(balance)} SIDI</b>\n\n"
+            f"Choose your bet:"
+        )
+        await callback.message.edit_text(text, reply_markup=lucky_number_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("lucky_bet_"))
+async def cb_lucky_bet(callback: CallbackQuery):
+    try:
+        bet = float(callback.data.replace("lucky_bet_", ""))
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet:
+            await callback.answer(f"Not enough SIDI. You have {fmt_number(balance)}", show_alert=True)
+            return
+
+        set_pending_action(callback.from_user.id, "game_lucky_pick", {"bet": bet})
+        await callback.message.edit_text(
+            f"\U0001f3b0 <b>Lucky Number</b>\n\n"
+            f"Bet: <b>{fmt_number(bet)} SIDI</b>\n"
+            f"Win: <b>{fmt_number(bet * 8)} SIDI</b>\n\n"
+            f"Type a number from <b>1 to 10</b>:",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+# =====================================================================
 #  TEXT MESSAGE HANDLER (multi-step flows + AI)
 # =====================================================================
 
@@ -2652,6 +3148,97 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
             )
         except TelegramBadRequest:
             pass
+
+    # -- Game flows --
+    elif action == "game_coinflip_custom_bet":
+        valid, bet_amount = is_valid_amount(text)
+        if not valid or bet_amount <= 0 or bet_amount > 50:
+            await message.answer(
+                "Enter a valid bet (1-50 SIDI):",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+        user = get_user(user_id)
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet_amount:
+            await message.answer(
+                f"Not enough SIDI. You have <b>{fmt_number(balance)}</b> {STAR}",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+        set_pending_action(user_id, "game_coinflip_choose", {"bet": bet_amount})
+        await message.answer(
+            f"\U0001fa99 <b>Coin Flip</b>\n\n"
+            f"Bet: <b>{fmt_number(bet_amount)} SIDI</b>\n"
+            f"Win: <b>{fmt_number(bet_amount * 2)} SIDI</b>\n\n"
+            f"Choose your side:",
+            reply_markup=coinflip_choice_keyboard(),
+        )
+
+    elif action == "game_lucky_pick":
+        try:
+            pick = int(text.strip())
+        except ValueError:
+            await message.answer("Please enter a number from 1 to 10:", reply_markup=cancel_keyboard())
+            return
+
+        if pick < 1 or pick > 10:
+            await message.answer("Number must be between 1 and 10:", reply_markup=cancel_keyboard())
+            return
+
+        bet = float(data.get("bet", 0))
+        user = get_user(user_id)
+        balance = float(user.get("sidi_balance", 0))
+        if balance < bet:
+            await message.answer(f"Not enough SIDI! Balance: {fmt_number(balance)} {STAR}", reply_markup=home_button_keyboard())
+            clear_pending_action(user_id)
+            return
+
+        result = random.randint(1, 10)
+        won = pick == result
+
+        if won:
+            winnings = bet * 7  # Net gain
+            update_balance(user_id, winnings)
+            increment_stat("game_payouts", winnings)
+            user = get_user(user_id)
+            new_balance = float(user.get("sidi_balance", 0))
+            text_msg = (
+                f"\U0001f3b0 <b>LUCKY NUMBER</b>\n\n"
+                f"  Your pick:  <b>{pick}</b>\n"
+                f"  Lucky num:  <b>{result}</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \U0001f389\U0001f389\U0001f389 <b>MEGA WIN!</b>\n\n"
+                f"  +<b>{fmt_number(bet * 8)} SIDI</b> ({fmt_naira(sidi_to_naira(bet * 8))})\n"
+                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"{DIVIDER}"
+            )
+        else:
+            update_balance(user_id, -bet)
+            increment_stat("game_revenue", bet)
+            user = get_user(user_id)
+            new_balance = float(user.get("sidi_balance", 0))
+            text_msg = (
+                f"\U0001f3b0 <b>LUCKY NUMBER</b>\n\n"
+                f"  Your pick:  <b>{pick}</b>\n"
+                f"  Lucky num:  <b>{result}</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \u274c <b>Not your lucky number</b>\n\n"
+                f"  -{fmt_number(bet)} SIDI\n"
+                f"  Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Will you be luckier next time? {STAR}"
+            )
+
+        add_transaction(user_id, {
+            "type": "game",
+            "amount": bet * 8 if won else bet,
+            "description": f"Lucky Number {'Won' if won else 'Lost'}: picked {pick}, drew {result}",
+            "timestamp": int(time.time()),
+            "reference": f"GAME-LUCKY-{int(time.time())}",
+        })
+        clear_pending_action(user_id)
+        await message.answer(text_msg, reply_markup=after_game_keyboard())
 
     else:
         clear_pending_action(user_id)

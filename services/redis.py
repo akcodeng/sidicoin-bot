@@ -45,6 +45,12 @@ def _retry(max_retries: int = 3, default=None):
 
 # ── Default user data template ─────────────────────────────────
 
+MAX_REFERRALS = 5  # Max referrals per user
+WELCOME_BONUS_SIDI = 10.0  # 250 naira = 10 SIDI at 25 NGN/SIDI
+WELCOME_BONUS_HOLD_DAYS = 2  # Days before welcome bonus can be withdrawn
+DAILY_CHECKIN_FREE = 2.0  # 50 naira = 2 SIDI
+DAILY_CHECKIN_PREMIUM = 5.0  # Premium daily checkin
+
 DEFAULT_USER = {
     "telegram_id": "",
     "username": "",
@@ -59,6 +65,8 @@ DEFAULT_USER = {
     "referred_by": "",
     "referral_count": 0,
     "referral_earnings": 0.0,
+    "referral_earnings_locked": 0.0,  # Locked until referral makes a transaction
+    "referral_earnings_unlocked": 0.0,  # Unlocked by referral transactions
     "total_sent": 0.0,
     "total_received": 0.0,
     "total_bought_ngn": 0.0,
@@ -77,9 +85,14 @@ DEFAULT_USER = {
     "is_banned": False,
     "last_active": 0,
     "welcome_bonus_claimed": False,
+    "welcome_bonus_hold_until": 0,  # Welcome bonus withdrawal lock (2 days)
     "cashout_hold_until": 0,
     "pending_action": "",
     "pending_data": {},
+    # Anti-fraud fields
+    "device_fingerprint": "",  # Hash of user metadata for multi-account detection
+    "flagged_multi_account": False,
+    "linked_accounts": [],  # Suspected linked accounts
 }
 
 
@@ -149,28 +162,29 @@ def create_user(
         "photo_url": photo_url,
         "wallet_address": wallet_address,
         "private_key": encrypted_private_key,
-        "sidi_balance": 80.0,  # Welcome bonus
+        "sidi_balance": WELCOME_BONUS_SIDI,  # 250 naira = 10 SIDI
         "referral_code": f"ref_{telegram_id}",
         "referred_by": referred_by,
         "joined_date": now,
         "last_active": now,
         "welcome_bonus_claimed": True,
-        "cashout_hold_until": now + 86400,  # 24 hours from now
+        "welcome_bonus_hold_until": now + (WELCOME_BONUS_HOLD_DAYS * 86400),  # 2 days lock
+        "cashout_hold_until": now + (WELCOME_BONUS_HOLD_DAYS * 86400),  # 2 days lock
     })
     save_user(telegram_id, user)
 
     # Add welcome bonus transaction
     add_transaction(telegram_id, {
         "type": "bonus",
-        "amount": 80.0,
-        "description": "Welcome Bonus",
+        "amount": WELCOME_BONUS_SIDI,
+        "description": f"Welcome Bonus ({WELCOME_BONUS_SIDI} SIDI = \u20a6250)",
         "timestamp": now,
         "reference": "WELCOME-BONUS",
     })
 
     # Increment total holders count
     increment_stat("total_holders", 1)
-    increment_stat("circulating_supply", 80.0)
+    increment_stat("circulating_supply", WELCOME_BONUS_SIDI)
 
     return user
 
@@ -327,15 +341,51 @@ def clear_pending_action(telegram_id: int | str) -> bool:
 
 # ── Referral system ────────────────────────────────────────────
 
-def credit_referrer(referrer_id: int | str, amount: float, reason: str) -> bool:
-    """Credit the referrer with bonus SIDI."""
+def can_refer(referrer_id: int | str) -> bool:
+    """Check if the referrer has not exceeded the 5 referral limit."""
     user = get_user(referrer_id)
     if not user:
         return False
-    user["sidi_balance"] = float(user.get("sidi_balance", 0)) + amount
-    user["referral_earnings"] = float(user.get("referral_earnings", 0)) + amount
+    return int(user.get("referral_count", 0)) < MAX_REFERRALS
+
+
+def credit_referrer(referrer_id: int | str, amount: float, reason: str) -> bool:
+    """
+    Credit the referrer with bonus SIDI.
+    For signup: earnings are LOCKED until the referred user makes a transaction.
+    For transaction: unlock previous locked earnings + add bonus.
+    Max 5 referrals enforced.
+    """
+    user = get_user(referrer_id)
+    if not user:
+        return False
+
     if reason == "signup":
-        user["referral_count"] = int(user.get("referral_count", 0)) + 1
+        # Enforce 5 referral cap
+        current_count = int(user.get("referral_count", 0))
+        if current_count >= MAX_REFERRALS:
+            return False
+        # Add to LOCKED balance (not spendable until referral transacts)
+        user["referral_earnings_locked"] = float(user.get("referral_earnings_locked", 0)) + amount
+        user["referral_earnings"] = float(user.get("referral_earnings", 0)) + amount
+        user["referral_count"] = current_count + 1
+        # Do NOT add to sidi_balance -- it stays locked
+    elif reason == "referral_tx_unlock":
+        # Unlock locked referral earnings when referred user transacts
+        locked = float(user.get("referral_earnings_locked", 0))
+        if locked > 0:
+            unlock_amount = min(locked, amount)
+            user["referral_earnings_locked"] = locked - unlock_amount
+            user["referral_earnings_unlocked"] = float(user.get("referral_earnings_unlocked", 0)) + unlock_amount
+            user["sidi_balance"] = float(user.get("sidi_balance", 0)) + unlock_amount
+            amount = unlock_amount  # Only credit what was unlocked
+        else:
+            return False  # Nothing to unlock
+    else:
+        # Other referral bonuses (legacy)
+        user["sidi_balance"] = float(user.get("sidi_balance", 0)) + amount
+        user["referral_earnings"] = float(user.get("referral_earnings", 0)) + amount
+
     save_user(referrer_id, user)
 
     add_transaction(referrer_id, {
@@ -346,8 +396,37 @@ def credit_referrer(referrer_id: int | str, amount: float, reason: str) -> bool:
         "reference": f"REF-{reason.upper()}-{int(time.time())}",
     })
 
-    increment_stat("circulating_supply", amount)
+    if reason != "signup":
+        # Only add to circulating supply when actually credited to balance
+        increment_stat("circulating_supply", amount)
     return True
+
+
+def unlock_referral_earnings_on_tx(user_id: int | str) -> None:
+    """
+    Called when a user performs a transaction (send/buy/sell).
+    If they were referred by someone, unlock that referrer's locked earnings.
+    """
+    user = get_user(user_id)
+    if not user:
+        return
+    referred_by = user.get("referred_by", "")
+    if not referred_by:
+        return
+    # Check if already unlocked (flag in user data)
+    if user.get("referral_tx_unlocked"):
+        return
+    try:
+        referrer_id = int(referred_by)
+        referrer = get_user(referrer_id)
+        if referrer:
+            # Unlock the referral bonus (10 SIDI signup bonus)
+            credit_referrer(referrer_id, 10.0, "referral_tx_unlock")
+            # Mark this user as having unlocked their referrer's bonus
+            user["referral_tx_unlocked"] = True
+            save_user(user_id, user)
+    except (ValueError, Exception) as e:
+        logger.error(f"Unlock referral earnings error: {e}")
 
 
 # ── Premium ────────────────────────────────────────────────────
@@ -405,18 +484,18 @@ def process_checkin(telegram_id: int | str) -> tuple[bool, str, float, int]:
     else:
         streak = 1
 
-    # Calculate reward
+    # Calculate reward (50 naira = 2 SIDI daily for free, 5 SIDI for premium)
     is_premium = check_premium_status(user)
-    base_reward = 25.0 if is_premium else 10.0
+    base_reward = DAILY_CHECKIN_PREMIUM if is_premium else DAILY_CHECKIN_FREE
     bonus = 0.0
     bonus_msg = ""
 
     if streak == 7:
-        bonus = 100.0
-        bonus_msg = "\n🔥 7 day streak! You are committed. +100 SIDI bonus added ✦"
+        bonus = 10.0  # 250 naira bonus
+        bonus_msg = "\n\U0001f525 7 day streak! You are committed. +10 SIDI bonus added \u2726"
     elif streak % 7 == 0 and streak > 7:
-        bonus = 100.0
-        bonus_msg = f"\n🔥 {streak} day streak! +100 SIDI bonus ✦"
+        bonus = 10.0
+        bonus_msg = f"\n\U0001f525 {streak} day streak! +10 SIDI bonus \u2726"
 
     total_reward = base_reward + bonus
 
@@ -644,3 +723,112 @@ def delete_pending_payment(reference: str) -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Anti-fraud / Multi-account detection ───────────────────────
+
+def generate_device_fingerprint(user_data: dict) -> str:
+    """
+    Generate a fingerprint from user metadata to detect multi-accounts.
+    Uses: first_name + last_name pattern, language_code, user_id patterns.
+    """
+    import hashlib
+    parts = [
+        str(user_data.get("first_name", "")).lower().strip(),
+        str(user_data.get("last_name", "")).lower().strip(),
+        str(user_data.get("language_code", "")),
+    ]
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def check_multi_account(telegram_id: int | str, fingerprint: str) -> dict:
+    """
+    Check if a fingerprint matches any existing users (multi-account detection).
+    Returns: {"is_suspicious": bool, "linked_accounts": [user_ids], "reason": str}
+    """
+    result = {"is_suspicious": False, "linked_accounts": [], "reason": ""}
+
+    try:
+        # Check fingerprint index
+        existing_ids = redis.smembers(f"fp_{fingerprint}")
+        if existing_ids:
+            other_ids = [str(uid) for uid in existing_ids if str(uid) != str(telegram_id)]
+            if other_ids:
+                result["is_suspicious"] = True
+                result["linked_accounts"] = other_ids[:5]
+                result["reason"] = "matching_fingerprint"
+
+        # Register this user's fingerprint
+        redis.sadd(f"fp_{fingerprint}", str(telegram_id))
+    except Exception as e:
+        logger.error(f"Multi-account check error: {e}")
+
+    return result
+
+
+def flag_suspicious_account(telegram_id: int | str, linked_ids: list, reason: str) -> bool:
+    """Flag an account as suspicious multi-account."""
+    user = get_user(telegram_id)
+    if not user:
+        return False
+    user["flagged_multi_account"] = True
+    user["linked_accounts"] = linked_ids[:5]
+    save_user(telegram_id, user)
+    return True
+
+
+def is_account_flagged(telegram_id: int | str) -> bool:
+    """Check if an account is flagged for multi-account abuse."""
+    user = get_user(telegram_id)
+    if not user:
+        return False
+    return bool(user.get("flagged_multi_account", False))
+
+
+def check_withdrawal_locks(telegram_id: int | str) -> dict:
+    """
+    Check all withdrawal locks for a user.
+    Returns: {"can_withdraw": bool, "reason": str, "remaining_secs": int}
+    """
+    user = get_user(telegram_id)
+    if not user:
+        return {"can_withdraw": False, "reason": "User not found", "remaining_secs": 0}
+
+    now = int(time.time())
+
+    # Check multi-account flag
+    if user.get("flagged_multi_account"):
+        return {
+            "can_withdraw": False,
+            "reason": "Account flagged for security review. Contact support.",
+            "remaining_secs": 0,
+        }
+
+    # Check banned status
+    if user.get("is_banned"):
+        return {
+            "can_withdraw": False,
+            "reason": "Account suspended.",
+            "remaining_secs": 0,
+        }
+
+    # Check welcome bonus hold (2 days)
+    welcome_hold = int(user.get("welcome_bonus_hold_until", 0))
+    if welcome_hold > now:
+        return {
+            "can_withdraw": False,
+            "reason": "welcome_hold",
+            "remaining_secs": welcome_hold - now,
+        }
+
+    # Check general cashout hold
+    cashout_hold = int(user.get("cashout_hold_until", 0))
+    if cashout_hold > now:
+        return {
+            "can_withdraw": False,
+            "reason": "cashout_hold",
+            "remaining_secs": cashout_hold - now,
+        }
+
+    return {"can_withdraw": True, "reason": "", "remaining_secs": 0}
