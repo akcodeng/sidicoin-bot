@@ -3817,14 +3817,35 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
 
         user = get_user(user_id)
         new_balance = float(user.get("sidi_balance", 0))
+        donor_name = user.get("full_name", user.get("username", "Anonymous"))
+        naira_val = sidi_to_naira(amount)
+
         await message.answer(
-            f"{STAR} <b>Thank You!</b>\n\n"
-            f"Your donation of <b>{fmt_number(amount)} SIDI</b> "
-            f"({fmt_naira(sidi_to_naira(amount))}) helps keep Sidicoin "
+            f"{STAR} <b>Thank You, {_safe_escape(donor_name)}!</b>\n\n"
+            f"Your generous donation of <b>{fmt_number(amount)} SIDI</b> "
+            f"({fmt_naira(naira_val)}) helps keep Sidicoin\n"
             f"running with zero fees for everyone.\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Because of supporters like you:\n\n"
+            f"  \u2022 All transfers stay free\n"
+            f"  \u2022 Escrow trades cost nothing\n"
+            f"  \u2022 Buy/sell with zero fees\n"
+            f"  \u2022 Cross-border payments stay free\n\n"
+            f"{DIVIDER}\n\n"
             f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
-            f"We appreciate your support {STAR}",
+            f"You are part of what makes Sidicoin possible.\n"
+            f"We truly appreciate your support {STAR}",
             reply_markup=home_keyboard(),
+        )
+
+        # Notify admin about the donation
+        from services.notifications import notify_admin as _admin_notify
+        await _admin_notify(
+            bot,
+            f"\U0001f4b0 <b>DONATION RECEIVED</b>\n\n"
+            f"From: {_safe_escape(donor_name)} ({user_id})\n"
+            f"Amount: {fmt_number(amount)} SIDI ({fmt_naira(naira_val)})\n"
+            f"Total donated: {fmt_number(get_stat('total_donations'))} SIDI",
         )
 
     # -- Escrow dispute reason --

@@ -38,9 +38,10 @@ async def _safe_send(bot: Bot, chat_id: str, text: str, **kwargs) -> bool:
 
 async def send_daily_checkin_reminders(bot: Bot):
     """
-    Send daily check-in reminders at 9am WAT to users who haven't checked in.
+    Send check-in reminders at 9am WAT to users who haven't checked in today.
+    Uses the monthly progressive system (10 per month).
     """
-    logger.info("Running daily check-in reminder job")
+    logger.info("Running check-in reminder job")
     now = int(time.time())
     user_ids = get_all_user_ids()
     sent_count = 0
@@ -51,25 +52,33 @@ async def send_daily_checkin_reminders(bot: Bot):
             if not user or user.get("is_banned"):
                 continue
 
+            # Check if already used all 10 monthly check-ins
+            current_month = time.strftime("%Y-%m", time.gmtime(now + 3600))
+            stored_month = user.get("monthly_checkin_month", "")
+            monthly_count = int(user.get("monthly_checkin_count", 0))
+            if stored_month == current_month and monthly_count >= 10:
+                continue  # All check-ins used this month
+
             last_checkin = int(user.get("daily_checkin_last", 0))
             # Check if last checkin was not today (more than 18 hours ago)
             if now - last_checkin > 64800:  # 18 hours
                 streak = int(user.get("checkin_streak", 0))
                 name = user.get("full_name", "there")
+                remaining = 10 - monthly_count if stored_month == current_month else 10
 
                 if streak > 0:
                     text = (
-                        f"☀️ Good morning, {name}!\n\n"
+                        f"\u2600\ufe0f Good morning, {name}!\n\n"
                         f"Don't break your <b>{streak}-day streak</b>! "
-                        f"Check in now to earn free SIDI.\n\n"
-                        f"Type /checkin to claim your daily reward ✦"
+                        f"You have <b>{remaining} check-ins</b> left this month.\n\n"
+                        f"Type /checkin to claim your reward \u2726"
                     )
                 else:
                     text = (
-                        f"☀️ Good morning, {name}!\n\n"
-                        f"Start your day with free SIDI! "
-                        f"Check in daily to build your streak and earn more.\n\n"
-                        f"Type /checkin to claim your reward ✦"
+                        f"\u2600\ufe0f Good morning, {name}!\n\n"
+                        f"Earn free SIDI! You have <b>{remaining} check-ins</b> "
+                        f"left this month. Rewards grow bigger each time!\n\n"
+                        f"Type /checkin to start earning \u2726"
                     )
 
                 if await _safe_send(bot, uid, text):
@@ -106,14 +115,14 @@ async def send_premium_expiry_alerts(bot: Bot):
                 name = user.get("full_name", "there")
 
                 text = (
-                    f"⚠️ {name}, your Sidicoin Premium ✦ expires in "
+                    f"\u26a0\ufe0f {name}, your Sidicoin Premium \u2726 expires in "
                     f"<b>{days_left} day{'s' if days_left != 1 else ''}</b>!\n\n"
                     f"Renew now to keep your:\n"
-                    f"• 500K SIDI daily limit\n"
-                    f"• 0.8% reduced fees\n"
-                    f"• 25 SIDI daily check-in\n"
-                    f"• ✦ Premium badge\n\n"
-                    f"Type /premium to renew ✦"
+                    f"\u2022 500K SIDI daily limit\n"
+                    f"\u2022 \u2726 Premium badge\n"
+                    f"\u2022 Priority support\n"
+                    f"\u2022 Escrow priority\n\n"
+                    f"Type /premium to renew \u2726"
                 )
 
                 await _safe_send(bot, uid, text)
