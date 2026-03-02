@@ -102,27 +102,13 @@ def find_similar_usernames(target: str, known_usernames: list[str], threshold: f
 def calculate_fee(amount_sidi: float, is_premium: bool, tx_type: str = "buy") -> float:
     """
     Calculate fee in SIDI.
-    Buy/Sell: 1.5% free, 0.8% premium.
-    Send local: 0% always (premium), 0% (free local).
-    Send cross-border: 0.5% free, 0% premium.
+    Sidicoin charges ZERO fees on all operations.
     """
-    if tx_type == "send":
-        return 0.0
-    elif tx_type == "send_cross":
-        if is_premium:
-            return 0.0
-        return amount_sidi * 0.005
-    elif tx_type in ("buy", "sell"):
-        rate = 0.008 if is_premium else 0.015
-        return amount_sidi * rate
     return 0.0
 
 
 def calculate_fee_naira(amount_naira: float, is_premium: bool, tx_type: str = "buy") -> float:
-    """Calculate fee in NGN for buy/sell operations."""
-    if tx_type in ("buy", "sell"):
-        rate = 0.008 if is_premium else 0.015
-        return amount_naira * rate
+    """Calculate fee in NGN. Sidicoin charges ZERO fees."""
     return 0.0
 
 

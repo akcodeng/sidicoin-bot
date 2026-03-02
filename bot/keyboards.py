@@ -19,13 +19,14 @@ def home_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="\U0001f4b0 Cash Out", callback_data="cmd_sell"),
+            InlineKeyboardButton(text="\U0001f6e1 Escrow", callback_data="cmd_escrow"),
+        ],
+        [
             InlineKeyboardButton(text="\U0001f381 Earn Free", callback_data="cmd_refer"),
-        ],
-        [
             InlineKeyboardButton(text="\U0001f3ae Games", callback_data="cmd_game"),
-            InlineKeyboardButton(text="\U0001f48e My Wallet", callback_data="cmd_balance"),
         ],
         [
+            InlineKeyboardButton(text="\U0001f48e My Wallet", callback_data="cmd_balance"),
             InlineKeyboardButton(text="\u2699\ufe0f Account", callback_data="cmd_settings"),
         ],
     ])
@@ -452,3 +453,121 @@ def home_button_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
     ])
+
+
+# =====================================================================
+#  ESCROW
+# =====================================================================
+
+def escrow_create_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="\U0001f6d2 P2P Trade", callback_data="escrow_new_p2p"),
+            InlineKeyboardButton(text="\U0001f30d Cross-Border", callback_data="escrow_new_xborder"),
+        ],
+        [
+            InlineKeyboardButton(text="\U0001f4cb My Escrows", callback_data="escrow_list"),
+        ],
+        [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
+    ])
+
+
+def escrow_detail_keyboard(escrow_id: str, user_role: str, status: str) -> InlineKeyboardMarkup:
+    """Dynamic buttons based on escrow state and user role."""
+    buttons = []
+
+    if status == "pending" and user_role == "buyer":
+        buttons.append([InlineKeyboardButton(
+            text="\U0001f4b3 Fund Escrow", callback_data=f"escrow_fund_{escrow_id}",
+        )])
+    if status == "funded" and user_role == "seller":
+        buttons.append([InlineKeyboardButton(
+            text="\U0001f4e6 Mark Delivered", callback_data=f"escrow_deliver_{escrow_id}",
+        )])
+    if status in ("funded", "delivered") and user_role == "buyer":
+        buttons.append([InlineKeyboardButton(
+            text="\u2705 Confirm & Release", callback_data=f"escrow_confirm_{escrow_id}",
+        )])
+    if status in ("funded", "delivered"):
+        buttons.append([InlineKeyboardButton(
+            text="\u26a0\ufe0f Raise Dispute", callback_data=f"escrow_dispute_{escrow_id}",
+        )])
+    if status == "pending":
+        buttons.append([InlineKeyboardButton(
+            text="\u274c Cancel", callback_data=f"escrow_cancel_{escrow_id}",
+        )])
+
+    buttons.append([InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def escrow_list_keyboard(escrows: list) -> InlineKeyboardMarkup:
+    """Build keyboard from user's escrows."""
+    buttons = []
+    for esc in escrows[:8]:
+        eid = esc.get("escrow_id", "")
+        status = esc.get("status", "")
+        amount = esc.get("amount_sidi", 0)
+        desc = esc.get("description", "")[:20]
+        status_icon = {
+            "pending": "\u23f3", "funded": "\U0001f4b3", "delivered": "\U0001f4e6",
+            "disputed": "\u26a0\ufe0f", "released": "\u2705", "cancelled": "\u274c",
+        }.get(status, "\u2022")
+        buttons.append([InlineKeyboardButton(
+            text=f"{status_icon} {desc or eid[:8]} | {amount} SIDI",
+            callback_data=f"escrow_view_{eid}",
+        )])
+    buttons.append([
+        InlineKeyboardButton(text="\u2795 New Escrow", callback_data="cmd_escrow"),
+        InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# =====================================================================
+#  SUPPORT / DONATE
+# =====================================================================
+
+def support_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="\U0001f4b0 Support with SIDI",
+                callback_data="support_sidi",
+            ),
+        ],
+        [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
+    ])
+
+
+# =====================================================================
+#  FUND METHOD (international)
+# =====================================================================
+
+def fund_method_keyboard(country_code: str) -> InlineKeyboardMarkup:
+    """Dynamic funding method based on user's country."""
+    buttons = []
+
+    from services.flutterwave import get_country_config
+    config = get_country_config(country_code)
+    methods = config.get("methods", ["card"])
+
+    if "bank_transfer" in methods:
+        buttons.append([InlineKeyboardButton(
+            text="\U0001f3e6 Bank Transfer (NGN)", callback_data="fund_bank_ngn",
+        )])
+    if "card" in methods:
+        buttons.append([InlineKeyboardButton(
+            text="\U0001f4b3 Card (Visa/Mastercard)", callback_data="fund_card",
+        )])
+    if any(m.startswith("mobile_money") or m == "mpesa" for m in methods):
+        buttons.append([InlineKeyboardButton(
+            text="\U0001f4f1 Mobile Money", callback_data="fund_mobile_money",
+        )])
+    if "ussd" in methods:
+        buttons.append([InlineKeyboardButton(
+            text="\U0001f4de USSD", callback_data="fund_ussd",
+        )])
+
+    buttons.append([InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
