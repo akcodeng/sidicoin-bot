@@ -4005,6 +4005,75 @@ async def handle_text_message(message: Message, bot: Bot):
         text = message.text.strip()
         sanitized = sanitize_input(text)
 
+        # -- Verification quiz handler (intercepts before pending actions) --
+        user = get_user(user_id)
+        if user and user.get("_verify_step") is not None:
+            step = int(user.get("_verify_step", 0))
+            questions = user.get("_verify_questions", [])
+            correct = int(user.get("_verify_correct", 0))
+            started = int(user.get("_verify_started", 0))
+            now = int(time.time())
+
+            # Check timeout (60s per question)
+            if now - started > 180:
+                user.pop("_verify_step", None)
+                user.pop("_verify_questions", None)
+                user.pop("_verify_correct", None)
+                user.pop("_verify_started", None)
+                save_user(user_id, user)
+                await message.answer(
+                    "Verification timed out. Use /verify in a group to try again."
+                )
+                return
+
+            if step < len(questions):
+                q = questions[step]
+                answer = sanitized.strip().lower()
+                expected = str(q.get("a", "")).strip().lower()
+
+                if answer == expected:
+                    correct += 1
+
+                step += 1
+                user["_verify_step"] = step
+                user["_verify_correct"] = correct
+
+                if step < len(questions):
+                    # Next question
+                    save_user(user_id, user)
+                    await message.answer(
+                        f"<b>Question {step + 1}:</b>  {questions[step]['q']}"
+                    )
+                else:
+                    # All questions answered
+                    user.pop("_verify_step", None)
+                    user.pop("_verify_questions", None)
+                    user.pop("_verify_correct", None)
+                    user.pop("_verify_started", None)
+
+                    passed = correct >= 2
+                    from services.redis import set_verification_status
+                    set_verification_status(str(user_id), passed, correct)
+                    save_user(user_id, user)
+
+                    if passed:
+                        await message.answer(
+                            f"\u2705 <b>Verification Passed!</b>\n\n"
+                            f"{DIVIDER}\n\n"
+                            f"  Score      {correct}/3\n"
+                            f"  Status     Verified\n\n"
+                            f"{DIVIDER}\n\n"
+                            f"  Your profile now shows a verified badge.\n"
+                            f"  Others can see it via /whois {STAR}"
+                        )
+                    else:
+                        await message.answer(
+                            f"\u274c <b>Verification Failed</b>\n\n"
+                            f"  Score: {correct}/3 (need 2 to pass)\n\n"
+                            f"  Use /verify in a group to try again."
+                        )
+                return
+
         action, data = get_pending_action(user_id)
 
         if action:

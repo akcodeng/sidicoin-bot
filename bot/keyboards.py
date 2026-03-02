@@ -609,3 +609,43 @@ def merchant_pay_confirm_keyboard(merchant_id: str, amount: float, ref: str) -> 
         )],
         [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
     ])
+
+
+# =====================================================================
+#  GROUP KEYBOARDS
+# =====================================================================
+
+def giveaway_join_keyboard(giveaway_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\U0001f389 Join Giveaway",
+            callback_data=f"giveaway_join_{giveaway_id}",
+        )],
+    ])
+
+
+def giveaway_end_keyboard(giveaway_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\U0001f3c1 End & Pick Winners",
+            callback_data=f"giveaway_end_{giveaway_id}",
+        )],
+    ])
+
+
+def verify_start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\u2705 Start Verification",
+            callback_data="verify_start",
+        )],
+    ])
+
+
+def whois_tip_keyboard(username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"\U0001f4b0 Tip @{username}",
+            url=f"https://t.me/SidicoinBot?start=tip_{username}",
+        )],
+    ])
