@@ -48,8 +48,13 @@ def _retry(max_retries: int = 3, default=None):
 MAX_REFERRALS = 5  # Max referrals per user
 WELCOME_BONUS_SIDI = 10.0  # 250 naira = 10 SIDI at 25 NGN/SIDI
 WELCOME_BONUS_HOLD_DAYS = 2  # Days before welcome bonus can be withdrawn
-DAILY_CHECKIN_FREE = 2.0  # 50 naira = 2 SIDI
-DAILY_CHECKIN_PREMIUM = 5.0  # Premium daily checkin
+DAILY_CHECKIN_FREE = 2.0  # Legacy (now progressive)
+DAILY_CHECKIN_PREMIUM = 5.0  # Legacy (now progressive)
+
+# Progressive check-in rewards (10 per month, ~44 SIDI total)
+MONTHLY_CHECKIN_LIMIT = 10
+CHECKIN_REWARDS = [0.5, 0.5, 1.0, 1.0, 2.0, 2.0, 3.0, 4.0, 5.0, 5.0]
+CHECKIN_DAY10_BONUS = 25.0  # Bonus on 10th check-in
 
 DEFAULT_USER = {
     "telegram_id": "",
@@ -65,14 +70,16 @@ DEFAULT_USER = {
     "referred_by": "",
     "referral_count": 0,
     "referral_earnings": 0.0,
-    "referral_earnings_locked": 0.0,  # Locked until referral makes a transaction
-    "referral_earnings_unlocked": 0.0,  # Unlocked by referral transactions
+    "referral_earnings_locked": 0.0,
+    "referral_earnings_unlocked": 0.0,
     "total_sent": 0.0,
     "total_received": 0.0,
     "total_bought_ngn": 0.0,
     "total_sold_ngn": 0.0,
     "daily_checkin_last": 0,
     "checkin_streak": 0,
+    "monthly_checkin_count": 0,  # Check-ins this month (max 10)
+    "monthly_checkin_month": "",  # "2026-03" format
     "transactions": [],
     "saved_contacts": [],
     "bank_name": "",
@@ -85,14 +92,23 @@ DEFAULT_USER = {
     "is_banned": False,
     "last_active": 0,
     "welcome_bonus_claimed": False,
-    "welcome_bonus_hold_until": 0,  # Welcome bonus withdrawal lock (2 days)
+    "welcome_bonus_hold_until": 0,
     "cashout_hold_until": 0,
     "pending_action": "",
     "pending_data": {},
+    # Country & international
+    "country_code": "NG",  # 2-letter ISO
+    "currency": "NGN",
+    "language_code": "",
+    # Escrow
+    "escrow_trades": [],  # Active escrow trades (IDs)
+    "escrow_rating": 5.0,  # Trust score (1-5)
+    "escrow_completed": 0,
+    "escrow_disputed": 0,
     # Anti-fraud fields
-    "device_fingerprint": "",  # Hash of user metadata for multi-account detection
+    "device_fingerprint": "",
     "flagged_multi_account": False,
-    "linked_accounts": [],  # Suspected linked accounts
+    "linked_accounts": [],
 }
 
 
@@ -459,8 +475,9 @@ def check_premium_status(user: dict) -> bool:
 
 def process_checkin(telegram_id: int | str) -> tuple[bool, str, float, int]:
     """
-    Process daily check-in.
-    Returns (success, message, amount_earned, streak).
+    Process monthly check-in (10 per month, progressive rewards).
+    Rewards: 0.5, 0.5, 1, 1, 2, 2, 3, 4, 5, 5+25 bonus = ~44 SIDI/month max.
+    Returns (success, message, amount_earned, checkin_number).
     """
     user = get_user(telegram_id)
     if not user:
@@ -468,7 +485,6 @@ def process_checkin(telegram_id: int | str) -> tuple[bool, str, float, int]:
 
     now = int(time.time())
     last_checkin = int(user.get("daily_checkin_last", 0))
-    streak = int(user.get("checkin_streak", 0))
 
     # Check if already checked in today
     if last_checkin > 0:
@@ -476,44 +492,63 @@ def process_checkin(telegram_id: int | str) -> tuple[bool, str, float, int]:
         now_dt = time.gmtime(now + 3600)
         if (last_dt.tm_year == now_dt.tm_year and
                 last_dt.tm_yday == now_dt.tm_yday):
-            return False, "You already checked in today. Come back tomorrow! ✦", 0.0, streak
+            monthly_count = int(user.get("monthly_checkin_count", 0))
+            remaining = MONTHLY_CHECKIN_LIMIT - monthly_count
+            return False, f"Already checked in today. {remaining} check-ins left this month.", 0.0, monthly_count
 
-    # Check if streak continues (within 48 hours)
+    # Reset monthly counter if new month
+    current_month = time.strftime("%Y-%m", time.gmtime(now + 3600))
+    stored_month = user.get("monthly_checkin_month", "")
+    if stored_month != current_month:
+        user["monthly_checkin_count"] = 0
+        user["monthly_checkin_month"] = current_month
+
+    monthly_count = int(user.get("monthly_checkin_count", 0))
+
+    # Check monthly limit
+    if monthly_count >= MONTHLY_CHECKIN_LIMIT:
+        return False, "You've used all 10 check-ins this month. Resets next month!", 0.0, monthly_count
+
+    # Calculate progressive reward
+    reward_index = min(monthly_count, len(CHECKIN_REWARDS) - 1)
+    base_reward = CHECKIN_REWARDS[reward_index]
+    bonus = 0.0
+    bonus_msg = ""
+
+    # 10th check-in bonus
+    if monthly_count == MONTHLY_CHECKIN_LIMIT - 1:
+        bonus = CHECKIN_DAY10_BONUS
+        bonus_msg = f"\n\U0001f389 10th check-in bonus! +{int(CHECKIN_DAY10_BONUS)} SIDI added!"
+
+    total_reward = base_reward + bonus
+    checkin_number = monthly_count + 1
+
+    # Update streak
+    streak = int(user.get("checkin_streak", 0))
     if last_checkin > 0 and (now - last_checkin) < 172800:
         streak += 1
     else:
         streak = 1
 
-    # Calculate reward (50 naira = 2 SIDI daily for free, 5 SIDI for premium)
-    is_premium = check_premium_status(user)
-    base_reward = DAILY_CHECKIN_PREMIUM if is_premium else DAILY_CHECKIN_FREE
-    bonus = 0.0
-    bonus_msg = ""
-
-    if streak == 7:
-        bonus = 10.0  # 250 naira bonus
-        bonus_msg = "\n\U0001f525 7 day streak! You are committed. +10 SIDI bonus added \u2726"
-    elif streak % 7 == 0 and streak > 7:
-        bonus = 10.0
-        bonus_msg = f"\n\U0001f525 {streak} day streak! +10 SIDI bonus \u2726"
-
-    total_reward = base_reward + bonus
-
     user["sidi_balance"] = float(user.get("sidi_balance", 0)) + total_reward
     user["daily_checkin_last"] = now
     user["checkin_streak"] = streak
+    user["monthly_checkin_count"] = checkin_number
+    user["monthly_checkin_month"] = current_month
     save_user(telegram_id, user)
+
+    remaining = MONTHLY_CHECKIN_LIMIT - checkin_number
 
     add_transaction(telegram_id, {
         "type": "checkin",
         "amount": total_reward,
-        "description": f"Daily check-in (Day {streak})",
+        "description": f"Check-in #{checkin_number}/10 ({remaining} left)",
         "timestamp": now,
         "reference": f"CHECKIN-{now}",
     })
 
     increment_stat("circulating_supply", total_reward)
-    return True, bonus_msg, total_reward, streak
+    return True, bonus_msg, total_reward, checkin_number
 
 
 # ── Rate limiting ──────────────────────────────────────────────
@@ -832,3 +867,332 @@ def check_withdrawal_locks(telegram_id: int | str) -> dict:
         }
 
     return {"can_withdraw": True, "reason": "", "remaining_secs": 0}
+
+
+# ── Country management ────────────────────────────────────────
+
+def update_user_country(telegram_id: int | str, country_code: str, currency: str) -> bool:
+    """Update user's country and currency."""
+    user = get_user(telegram_id)
+    if not user:
+        return False
+    user["country_code"] = country_code.upper()
+    user["currency"] = currency.upper()
+    save_user(telegram_id, user)
+    return True
+
+
+def get_user_country(telegram_id: int | str) -> tuple[str, str]:
+    """Get user's country code and currency. Returns ('NG', 'NGN') default."""
+    user = get_user(telegram_id)
+    if not user:
+        return "NG", "NGN"
+    return user.get("country_code", "NG"), user.get("currency", "NGN")
+
+
+# ── Escrow system ─────────────────────────────────────────────
+
+ESCROW_STATUS_PENDING = "pending"         # Created, waiting for buyer to fund
+ESCROW_STATUS_FUNDED = "funded"           # Buyer funded, seller must deliver
+ESCROW_STATUS_DELIVERED = "delivered"     # Seller marked delivered
+ESCROW_STATUS_CONFIRMED = "confirmed"    # Buyer confirmed, funds released
+ESCROW_STATUS_DISPUTED = "disputed"      # Dispute raised
+ESCROW_STATUS_CANCELLED = "cancelled"    # Cancelled
+ESCROW_STATUS_RELEASED = "released"      # Admin or auto-released
+
+ESCROW_TYPES = ["p2p_trade", "cross_border"]
+
+
+def _escrow_key(escrow_id: str) -> str:
+    return f"escrow_{escrow_id}"
+
+
+def create_escrow(
+    escrow_id: str,
+    seller_id: str,
+    buyer_id: str,
+    amount_sidi: float,
+    escrow_type: str = "p2p_trade",
+    description: str = "",
+    delivery_hours: int = 24,
+) -> dict:
+    """
+    Create an escrow transaction.
+    Funds are held until both parties confirm.
+    """
+    now = int(time.time())
+    escrow = {
+        "escrow_id": escrow_id,
+        "seller_id": str(seller_id),
+        "buyer_id": str(buyer_id),
+        "amount_sidi": amount_sidi,
+        "escrow_type": escrow_type,
+        "description": description,
+        "status": ESCROW_STATUS_PENDING,
+        "created_at": now,
+        "funded_at": 0,
+        "delivered_at": 0,
+        "confirmed_at": 0,
+        "delivery_deadline": 0,
+        "delivery_hours": delivery_hours,
+        "dispute_reason": "",
+        "dispute_by": "",
+        "chat_messages": [],
+    }
+    try:
+        redis.set(_escrow_key(escrow_id), json.dumps(escrow))
+        redis.expire(_escrow_key(escrow_id), 30 * 86400)  # 30 day TTL
+        # Track active escrows
+        redis.sadd("active_escrows", escrow_id)
+        return {"success": True, "escrow": escrow}
+    except Exception as e:
+        logger.error(f"Create escrow error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+def get_escrow(escrow_id: str) -> Optional[dict]:
+    """Get escrow by ID."""
+    try:
+        data = redis.get(_escrow_key(escrow_id))
+        if data is None:
+            return None
+        if isinstance(data, str):
+            return json.loads(data)
+        if isinstance(data, dict):
+            return data
+        return None
+    except Exception as e:
+        logger.error(f"Get escrow error: {e}")
+        return None
+
+
+def update_escrow(escrow_id: str, updates: dict) -> bool:
+    """Update escrow fields."""
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return False
+    escrow.update(updates)
+    try:
+        redis.set(_escrow_key(escrow_id), json.dumps(escrow))
+        return True
+    except Exception as e:
+        logger.error(f"Update escrow error: {e}")
+        return False
+
+
+def fund_escrow(escrow_id: str, buyer_id: str) -> dict:
+    """
+    Buyer funds the escrow. Deducts SIDI from buyer's wallet.
+    """
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return {"success": False, "message": "Escrow not found"}
+    if escrow["status"] != ESCROW_STATUS_PENDING:
+        return {"success": False, "message": f"Escrow is {escrow['status']}, cannot fund"}
+    if str(escrow["buyer_id"]) != str(buyer_id):
+        return {"success": False, "message": "Only the buyer can fund this escrow"}
+
+    amount = float(escrow["amount_sidi"])
+    buyer = get_user(buyer_id)
+    if not buyer:
+        return {"success": False, "message": "Buyer not found"}
+    if float(buyer.get("sidi_balance", 0)) < amount:
+        return {"success": False, "message": "Insufficient balance"}
+
+    # Deduct from buyer
+    buyer["sidi_balance"] = float(buyer["sidi_balance"]) - amount
+    save_user(buyer_id, buyer)
+
+    now = int(time.time())
+    delivery_hours = int(escrow.get("delivery_hours", 24))
+    update_escrow(escrow_id, {
+        "status": ESCROW_STATUS_FUNDED,
+        "funded_at": now,
+        "delivery_deadline": now + (delivery_hours * 3600),
+    })
+
+    add_transaction(buyer_id, {
+        "type": "escrow_lock",
+        "amount": amount,
+        "description": f"Escrow funded: {escrow.get('description', escrow_id)}",
+        "timestamp": now,
+        "reference": f"ESC-FUND-{escrow_id}",
+    })
+
+    return {"success": True}
+
+
+def mark_delivered(escrow_id: str, seller_id: str) -> dict:
+    """Seller marks the item/service as delivered."""
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return {"success": False, "message": "Escrow not found"}
+    if escrow["status"] != ESCROW_STATUS_FUNDED:
+        return {"success": False, "message": f"Escrow is {escrow['status']}"}
+    if str(escrow["seller_id"]) != str(seller_id):
+        return {"success": False, "message": "Only the seller can mark as delivered"}
+
+    update_escrow(escrow_id, {
+        "status": ESCROW_STATUS_DELIVERED,
+        "delivered_at": int(time.time()),
+    })
+    return {"success": True}
+
+
+def confirm_delivery(escrow_id: str, buyer_id: str) -> dict:
+    """
+    Buyer confirms delivery. Releases SIDI to seller.
+    """
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return {"success": False, "message": "Escrow not found"}
+    if escrow["status"] not in (ESCROW_STATUS_FUNDED, ESCROW_STATUS_DELIVERED):
+        return {"success": False, "message": f"Escrow is {escrow['status']}"}
+    if str(escrow["buyer_id"]) != str(buyer_id):
+        return {"success": False, "message": "Only the buyer can confirm"}
+
+    amount = float(escrow["amount_sidi"])
+    seller_id = escrow["seller_id"]
+    seller = get_user(seller_id)
+    if not seller:
+        return {"success": False, "message": "Seller not found"}
+
+    # Release funds to seller
+    seller["sidi_balance"] = float(seller.get("sidi_balance", 0)) + amount
+    seller["escrow_completed"] = int(seller.get("escrow_completed", 0)) + 1
+    save_user(seller_id, seller)
+
+    # Update buyer stats
+    buyer = get_user(buyer_id)
+    if buyer:
+        buyer["escrow_completed"] = int(buyer.get("escrow_completed", 0)) + 1
+        save_user(buyer_id, buyer)
+
+    now = int(time.time())
+    update_escrow(escrow_id, {
+        "status": ESCROW_STATUS_RELEASED,
+        "confirmed_at": now,
+    })
+
+    # Remove from active escrows
+    try:
+        redis.srem("active_escrows", escrow_id)
+    except Exception:
+        pass
+
+    # Record transactions
+    add_transaction(seller_id, {
+        "type": "escrow_release",
+        "amount": amount,
+        "description": f"Escrow released: {escrow.get('description', escrow_id)}",
+        "timestamp": now,
+        "reference": f"ESC-REL-{escrow_id}",
+    })
+    add_transaction(buyer_id, {
+        "type": "escrow_complete",
+        "amount": amount,
+        "description": f"Escrow completed: {escrow.get('description', escrow_id)}",
+        "timestamp": now,
+        "reference": f"ESC-DONE-{escrow_id}",
+    })
+
+    return {"success": True, "amount": amount}
+
+
+def raise_dispute(escrow_id: str, user_id: str, reason: str) -> dict:
+    """Raise a dispute on an escrow."""
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return {"success": False, "message": "Escrow not found"}
+    if escrow["status"] not in (ESCROW_STATUS_FUNDED, ESCROW_STATUS_DELIVERED):
+        return {"success": False, "message": f"Cannot dispute: escrow is {escrow['status']}"}
+    if str(user_id) not in (str(escrow["seller_id"]), str(escrow["buyer_id"])):
+        return {"success": False, "message": "Only buyer or seller can dispute"}
+
+    update_escrow(escrow_id, {
+        "status": ESCROW_STATUS_DISPUTED,
+        "dispute_reason": reason[:500],
+        "dispute_by": str(user_id),
+    })
+
+    # Update user dispute count
+    user = get_user(user_id)
+    if user:
+        user["escrow_disputed"] = int(user.get("escrow_disputed", 0)) + 1
+        save_user(user_id, user)
+
+    return {"success": True}
+
+
+def cancel_escrow(escrow_id: str, user_id: str) -> dict:
+    """Cancel a pending (unfunded) escrow."""
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return {"success": False, "message": "Escrow not found"}
+    if escrow["status"] != ESCROW_STATUS_PENDING:
+        return {"success": False, "message": "Only pending escrows can be cancelled"}
+    if str(user_id) not in (str(escrow["seller_id"]), str(escrow["buyer_id"])):
+        return {"success": False, "message": "Unauthorized"}
+
+    update_escrow(escrow_id, {"status": ESCROW_STATUS_CANCELLED})
+    try:
+        redis.srem("active_escrows", escrow_id)
+    except Exception:
+        pass
+    return {"success": True}
+
+
+def refund_escrow(escrow_id: str) -> dict:
+    """Admin: refund buyer on disputed escrow."""
+    escrow = get_escrow(escrow_id)
+    if not escrow:
+        return {"success": False, "message": "Escrow not found"}
+    if escrow["status"] != ESCROW_STATUS_DISPUTED:
+        return {"success": False, "message": "Only disputed escrows can be refunded"}
+
+    amount = float(escrow["amount_sidi"])
+    buyer_id = escrow["buyer_id"]
+    buyer = get_user(buyer_id)
+    if not buyer:
+        return {"success": False, "message": "Buyer not found"}
+
+    buyer["sidi_balance"] = float(buyer.get("sidi_balance", 0)) + amount
+    save_user(buyer_id, buyer)
+
+    now = int(time.time())
+    update_escrow(escrow_id, {"status": ESCROW_STATUS_CANCELLED, "confirmed_at": now})
+    try:
+        redis.srem("active_escrows", escrow_id)
+    except Exception:
+        pass
+
+    add_transaction(buyer_id, {
+        "type": "escrow_refund",
+        "amount": amount,
+        "description": f"Escrow refunded: {escrow.get('description', escrow_id)}",
+        "timestamp": now,
+        "reference": f"ESC-REFUND-{escrow_id}",
+    })
+
+    return {"success": True, "amount": amount}
+
+
+def get_user_escrows(telegram_id: str, status_filter: str = "") -> list[dict]:
+    """Get all escrows where user is buyer or seller."""
+    uid = str(telegram_id)
+    escrows = []
+    try:
+        active_ids = redis.smembers("active_escrows")
+        if not active_ids:
+            return []
+        for eid in active_ids:
+            esc = get_escrow(str(eid))
+            if not esc:
+                continue
+            if str(esc.get("seller_id")) == uid or str(esc.get("buyer_id")) == uid:
+                if status_filter and esc.get("status") != status_filter:
+                    continue
+                escrows.append(esc)
+    except Exception as e:
+        logger.error(f"Get user escrows error: {e}")
+    return escrows

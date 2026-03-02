@@ -25,17 +25,25 @@ from services.redis import (
     get_all_user_ids, find_user_by_username,
     get_stat, get_all_stats, increment_stat,
     store_pending_payment, track_large_transfer, increment_rate_count,
-    update_bank_details,
+    update_bank_details, update_user_country, get_user_country,
     generate_device_fingerprint, check_multi_account,
     flag_suspicious_account, is_account_flagged,
     check_withdrawal_locks, unlock_referral_earnings_on_tx,
+    create_escrow, get_escrow, fund_escrow, mark_delivered,
+    confirm_delivery, raise_dispute, cancel_escrow, get_user_escrows,
+    ESCROW_STATUS_PENDING, ESCROW_STATUS_FUNDED, ESCROW_STATUS_DELIVERED,
     MAX_REFERRALS, WELCOME_BONUS_SIDI, WELCOME_BONUS_HOLD_DAYS,
     DAILY_CHECKIN_FREE, DAILY_CHECKIN_PREMIUM,
+    MONTHLY_CHECKIN_LIMIT, CHECKIN_REWARDS, CHECKIN_DAY10_BONUS,
 )
 from services.ton import create_wallet, format_wallet_address
 from services.korapay import (
     create_bank_transfer_charge, verify_bank_account,
     process_payout, get_bank_code, COMMON_BANKS,
+)
+from services.flutterwave import (
+    create_payment_link, get_country_config, detect_country_from_language,
+    convert_to_ngn, convert_from_ngn, COUNTRY_CONFIG,
 )
 from services.groq import get_ai_response, detect_intent
 from services.notifications import notify_user, notify_admin
@@ -67,6 +75,8 @@ from bot.keyboards import (
     game_menu_keyboard, coinflip_bet_keyboard, coinflip_choice_keyboard,
     dice_bet_keyboard, dice_choice_keyboard, lucky_number_keyboard,
     after_game_keyboard,
+    escrow_create_keyboard, escrow_detail_keyboard, escrow_list_keyboard,
+    support_keyboard, fund_method_keyboard,
 )
 
 logger = logging.getLogger("sidicoin.commands")
@@ -173,6 +183,11 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         })
         multi_check = check_multi_account(user_id, fingerprint)
 
+        # Detect country from Telegram language
+        lang_code = from_user.language_code or "en"
+        detected_country = detect_country_from_language(lang_code)
+        country_config = get_country_config(detected_country)
+
         # Create TON wallet
         wallet_address, encrypted_key = create_wallet()
 
@@ -187,7 +202,10 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             referred_by=referred_by,
         )
 
-        # Store fingerprint in user data
+        # Store country, language, and fingerprint
+        user["country_code"] = detected_country
+        user["currency"] = country_config["currency"]
+        user["language_code"] = lang_code
         user["device_fingerprint"] = fingerprint
         if multi_check["is_suspicious"]:
             user["flagged_multi_account"] = True
@@ -243,10 +261,13 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             )
 
         welcome_naira = sidi_to_naira(WELCOME_BONUS_SIDI)
+        country_flag = country_config.get("flag", "\U0001f30d")
+        country_name = country_config.get("name", "your country")
+
         welcome_text = (
             f"{STAR} <b>Welcome to Sidicoin, {_safe_escape(first_name)}</b>\n\n"
-            f"Your wallet is ready.\n"
-            f"Your money moves instantly across Africa.\n"
+            f"Your wallet is ready. {country_flag} {country_name} detected.\n"
+            f"Your money moves instantly worldwide.\n"
             f"{referral_line}\n"
             f"{DIVIDER}\n"
             f"  <b>Your Welcome Gift</b>\n\n"
@@ -254,8 +275,8 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             f"  \U0001f4b5  {fmt_naira(welcome_naira)}\n"
             f"  \U0001f512  Withdrawable after {WELCOME_BONUS_HOLD_DAYS} days\n"
             f"{DIVIDER}\n\n"
-            f"Sidicoin lets you send money to anyone in Africa using "
-            f"just their Telegram @username \u2014 instantly, for free.\n\n"
+            f"Sidicoin lets you send money to anyone worldwide using "
+            f"just their Telegram @username \u2014 instantly, with zero fees.\n\n"
             f"Let's get you started {STAR}"
         )
 
@@ -491,9 +512,6 @@ async def cmd_buy(message: Message):
             await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
-        is_prem = check_premium_status(user)
-        fee_label = "0.8%" if is_prem else "1.5%"
-
         await message.answer(
             f"{STAR} <b>Buy SIDI</b>\n\n"
             f"How much would you like to buy?\n\n"
@@ -502,7 +520,7 @@ async def cmd_buy(message: Message):
             f"  <code>2000 SIDI</code>  \u2192 2,000 SIDI\n"
             f"  <code>5000 NGN</code>   \u2192 {fmt_naira(5000)} worth\n"
             f"  <code>5k</code>         \u2192 5,000 SIDI\n\n"
-            f"Fee: {fee_label}",
+            f"Fee: <b>Free</b> \u2705",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "buy_amount")
@@ -534,14 +552,11 @@ async def cmd_sell(message: Message):
             )
             return
 
-        is_prem = check_premium_status(user)
-        fee_label = "0.8%" if is_prem else "1.5%"
-
         await message.answer(
             f"{STAR} <b>Cash Out SIDI</b>\n\n"
             f"Balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
             f"How much SIDI would you like to cash out?\n"
-            f"Fee: {fee_label}",
+            f"Fee: <b>Free</b> \u2705",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "sell_amount")
@@ -778,29 +793,60 @@ async def cmd_refer(message: Message, bot: Bot):
 
 @router.message(Command("checkin"))
 async def cmd_checkin(message: Message):
-    """Daily check-in reward."""
+    """Monthly check-in reward (10 per month, progressive)."""
     try:
         user = get_user(message.from_user.id)
         if not user:
             await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
-        success, bonus_msg, amount, streak = process_checkin(message.from_user.id)
+        success, bonus_msg, amount, checkin_num = process_checkin(message.from_user.id)
 
         if not success:
-            await message.answer(bonus_msg, reply_markup=home_button_keyboard())
+            # Show schedule with remaining info
+            monthly_count = int(user.get("monthly_checkin_count", 0))
+            remaining = MONTHLY_CHECKIN_LIMIT - monthly_count
+            schedule_lines = []
+            for i, reward in enumerate(CHECKIN_REWARDS):
+                day = i + 1
+                marker = "\u2705" if i < monthly_count else "\u2b1c"
+                bonus_label = f" +{int(CHECKIN_DAY10_BONUS)} bonus!" if day == 10 else ""
+                schedule_lines.append(f"  {marker} #{day}  {reward} SIDI{bonus_label}")
+
+            text = (
+                f"{STAR} <b>Monthly Check-In</b>\n\n"
+                f"{bonus_msg}\n\n"
+                f"{DIVIDER}\n\n"
+                + "\n".join(schedule_lines) + "\n\n"
+                f"{DIVIDER}\n\n"
+                f"  {remaining} check-ins remaining this month"
+            )
+            await message.answer(text, reply_markup=home_button_keyboard())
             return
 
         user = get_user(message.from_user.id)
         balance = float(user.get("sidi_balance", 0))
-        fires = streak_fire(streak)
+        remaining = MONTHLY_CHECKIN_LIMIT - checkin_num
+        fires = streak_fire(int(user.get("checkin_streak", 0)))
+
+        # Show reward schedule
+        schedule_lines = []
+        for i, reward in enumerate(CHECKIN_REWARDS):
+            day = i + 1
+            marker = "\u2705" if i < checkin_num else "\u2b1c"
+            bonus_label = f" +{int(CHECKIN_DAY10_BONUS)} bonus!" if day == 10 else ""
+            schedule_lines.append(f"  {marker} #{day}  {reward} SIDI{bonus_label}")
 
         text = (
-            f"{STAR} <b>Daily Reward Claimed!</b>\n\n"
-            f"+<b>{fmt_number(amount)} SIDI</b> added to your wallet\n\n"
-            f"  {fires}  Streak: <b>{streak} days</b>\n"
+            f"{STAR} <b>Check-In #{checkin_num} Claimed!</b>\n\n"
+            f"+<b>{fmt_number(amount)} SIDI</b> added to your wallet\n"
+            f"{bonus_msg}\n\n"
+            f"  {fires}  Streak: <b>{int(user.get('checkin_streak', 0))} days</b>\n"
             f"  \U0001f48e  Balance: <b>{fmt_number(balance)} SIDI</b>\n"
-            f"{bonus_msg}"
+            f"  \U0001f4c5  {remaining} check-ins left this month\n\n"
+            f"{DIVIDER}\n\n"
+            + "\n".join(schedule_lines) + "\n\n"
+            f"{DIVIDER}"
         )
         await message.answer(text, reply_markup=home_keyboard())
 
@@ -837,13 +883,13 @@ async def cmd_premium(message: Message):
             f"{DIVIDER}\n\n"
             f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
             f"  Daily Limit       50K      <b>500K</b>\n"
-            f"  Buy/Sell Fee      1.5%     <b>0.8%</b>\n"
-            f"  Daily Check-in    {fmt_number(DAILY_CHECKIN_FREE)}       <b>{fmt_number(DAILY_CHECKIN_PREMIUM)} SIDI</b>\n"
+            f"  All Fees          Free     <b>Free</b>\n"
             f"  Badge             \u2014        <b>{STAR}</b>\n"
-            f"  Priority Support  \u2014        <b>\u2705</b>\n\n"
+            f"  Priority Support  \u2014        <b>\u2705</b>\n"
+            f"  Escrow Priority   \u2014        <b>\u2705</b>\n\n"
             f"{DIVIDER}\n\n"
             f"  <b>{fmt_naira(1500)} per month</b>\n"
-            f"  That's just {fmt_naira(50)}/day for 10x the limits"
+            f"  10x higher limits + priority support"
         )
         await message.answer(text, reply_markup=premium_keyboard())
 
@@ -1033,23 +1079,27 @@ async def cmd_help(message: Message):
         f"  /balance \u2014 Check your SIDI balance\n"
         f"  /settings \u2014 Account & bank settings\n\n"
         f"  <b>\U0001f4e4 Transfers</b>\n"
-        f"  /send \u2014 Send SIDI to anyone\n"
+        f"  /send \u2014 Send SIDI to anyone worldwide\n"
         f"  /send @user 500 \u2014 Quick send\n"
         f"  /contacts \u2014 Saved contacts\n\n"
         f"  <b>\U0001f4b0 Money</b>\n"
-        f"  /buy \u2014 Buy SIDI with Naira\n"
-        f"  /sell \u2014 Cash out to bank\n"
+        f"  /buy \u2014 Buy SIDI (zero fees)\n"
+        f"  /sell \u2014 Cash out to bank (zero fees)\n"
         f"  /history \u2014 Transaction history\n\n"
+        f"  <b>\U0001f6e1 Escrow</b>\n"
+        f"  /escrow \u2014 Safe P2P trades & transfers\n\n"
         f"  <b>\U0001f381 Earn</b>\n"
-        f"  /checkin \u2014 Daily {fmt_number(DAILY_CHECKIN_FREE)} SIDI (\u20a650/day)\n"
+        f"  /checkin \u2014 Monthly check-in (10x, up to 44 SIDI)\n"
         f"  /refer \u2014 Earn 10 SIDI per referral (max {MAX_REFERRALS})\n"
-        f"  /premium \u2014 Lower fees & higher limits\n\n"
+        f"  /premium \u2014 Higher limits & priority\n\n"
         f"  <b>\U0001f3ae Games</b>\n"
         f"  /game \u2014 Play games to win SIDI\n\n"
         f"  <b>\U0001f4ca Market</b>\n"
         f"  /price \u2014 SIDI price & market data\n"
         f"  /stats \u2014 Platform statistics\n"
         f"  /leaderboard \u2014 Top holders\n\n"
+        f"  <b>\u2764\ufe0f Support</b>\n"
+        f"  /support \u2014 Help keep Sidicoin free\n\n"
         f"  <b>\u2139\ufe0f Info</b>\n"
         f"  /about \u2014 About Sidicoin\n"
         f"  /help \u2014 This menu\n\n"
@@ -1420,8 +1470,6 @@ async def cb_buy(callback: CallbackQuery):
         if not user:
             await callback.answer("Please /start first")
             return
-        is_prem = check_premium_status(user)
-        fee_label = "0.8%" if is_prem else "1.5%"
         await callback.message.edit_text(
             f"{STAR} <b>Buy SIDI</b>\n\n"
             f"How much would you like to buy?\n\n"
@@ -1429,7 +1477,7 @@ async def cb_buy(callback: CallbackQuery):
             f"  <code>2000 SIDI</code>  \u2192 2,000 SIDI\n"
             f"  <code>5000 NGN</code>   \u2192 {fmt_naira(5000)} worth\n"
             f"  <code>5k</code>         \u2192 5,000 SIDI\n\n"
-            f"Fee: {fee_label}",
+            f"Fee: <b>Free</b> \u2705",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(callback.from_user.id, "buy_amount")
@@ -1456,13 +1504,11 @@ async def cb_sell(callback: CallbackQuery):
             )
             await callback.answer()
             return
-        is_prem = check_premium_status(user)
-        fee_label = "0.8%" if is_prem else "1.5%"
         await callback.message.edit_text(
             f"{STAR} <b>Cash Out SIDI</b>\n\n"
             f"Balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
             f"How much SIDI would you like to cash out?\n"
-            f"Fee: {fee_label}",
+            f"Fee: <b>Free</b> \u2705",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(callback.from_user.id, "sell_amount")
@@ -1586,28 +1632,30 @@ async def cb_history(callback: CallbackQuery):
 
 @router.callback_query(F.data == "cmd_checkin")
 async def cb_checkin(callback: CallbackQuery):
-    """Daily check-in from inline button."""
+    """Monthly check-in from inline button."""
     try:
         user = get_user(callback.from_user.id)
         if not user:
             await callback.answer("Please /start first")
             return
-        success, bonus_msg, amount, streak = process_checkin(callback.from_user.id)
+        success, bonus_msg, amount, checkin_num = process_checkin(callback.from_user.id)
         if not success:
             await callback.answer(bonus_msg, show_alert=True)
             return
         user = get_user(callback.from_user.id)
         balance = float(user.get("sidi_balance", 0))
-        fires = streak_fire(streak)
+        remaining = MONTHLY_CHECKIN_LIMIT - checkin_num
+        fires = streak_fire(int(user.get("checkin_streak", 0)))
         text = (
-            f"{STAR} <b>Daily Reward Claimed!</b>\n\n"
-            f"+<b>{fmt_number(amount)} SIDI</b>\n\n"
-            f"  {fires}  Streak: <b>{streak} days</b>\n"
+            f"{STAR} <b>Check-In #{checkin_num} Claimed!</b>\n\n"
+            f"+<b>{fmt_number(amount)} SIDI</b>\n"
+            f"{bonus_msg}\n\n"
+            f"  {fires}  Streak: <b>{int(user.get('checkin_streak', 0))} days</b>\n"
             f"  \U0001f48e  Balance: <b>{fmt_number(balance)} SIDI</b>\n"
-            f"{bonus_msg}"
+            f"  \U0001f4c5  {remaining} check-ins left this month"
         )
         await callback.message.edit_text(text, reply_markup=home_keyboard())
-        await callback.answer(f"+{fmt_number(amount)} SIDI!")
+        await callback.answer(f"+{fmt_number(amount)} SIDI! #{checkin_num}/10")
     except TelegramBadRequest:
         await callback.answer()
     except Exception as e:
@@ -2472,6 +2520,397 @@ async def cb_cancel_action(callback: CallbackQuery):
 
 
 # =====================================================================
+#  ESCROW
+# =====================================================================
+
+@router.message(Command("escrow"))
+async def cmd_escrow(message: Message):
+    """Show escrow menu."""
+    try:
+        user = get_user(message.from_user.id)
+        if not user:
+            await message.answer(f"Type /start to create your wallet first {STAR}")
+            return
+
+        active = get_user_escrows(str(message.from_user.id))
+        active_count = len(active)
+        completed = int(user.get("escrow_completed", 0))
+        rating = float(user.get("escrow_rating", 5.0))
+
+        text = (
+            f"\U0001f6e1 <b>Sidicoin Escrow</b>\n\n"
+            f"Trade safely on Telegram. Your money is\n"
+            f"held securely until both parties confirm.\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>How It Works</b>\n\n"
+            f"  1. Create an escrow (seller or buyer)\n"
+            f"  2. Buyer funds the escrow (SIDI locked)\n"
+            f"  3. Seller delivers the item/service\n"
+            f"  4. Buyer confirms delivery\n"
+            f"  5. SIDI released to seller instantly\n\n"
+            f"  \U0001f512 Funds are 100% protected\n"
+            f"  \u26a0\ufe0f Disputes handled by our team\n"
+            f"  \U0001f4b0 Zero fees on escrow\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  Active escrows: <b>{active_count}</b>\n"
+            f"  Completed: <b>{completed}</b>\n"
+            f"  Trust score: <b>{rating:.1f}/5.0</b>\n\n"
+            f"{DIVIDER}"
+        )
+        await message.answer(text, reply_markup=escrow_create_keyboard())
+
+    except Exception as e:
+        logger.error(f"/escrow error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}")
+
+
+@router.callback_query(F.data == "cmd_escrow")
+async def cb_escrow(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        active = get_user_escrows(str(callback.from_user.id))
+        text = (
+            f"\U0001f6e1 <b>Sidicoin Escrow</b>\n\n"
+            f"Trade safely. Create or manage escrows.\n\n"
+            f"  Active: <b>{len(active)}</b>\n"
+            f"  Completed: <b>{user.get('escrow_completed', 0)}</b>"
+        )
+        await callback.message.edit_text(text, reply_markup=escrow_create_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_escrow error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.in_({"escrow_new_p2p", "escrow_new_xborder"}))
+async def cb_escrow_new(callback: CallbackQuery):
+    try:
+        escrow_type = "p2p_trade" if callback.data == "escrow_new_p2p" else "cross_border"
+        type_label = "P2P Trade" if escrow_type == "p2p_trade" else "Cross-Border Transfer"
+
+        set_pending_action(callback.from_user.id, "escrow_role_select", {"escrow_type": escrow_type})
+        text = (
+            f"\U0001f6e1 <b>New {type_label} Escrow</b>\n\n"
+            f"Are you the buyer or seller?\n\n"
+            f"  \U0001f6d2 <b>Seller</b> \u2014 You are selling an item/service\n"
+            f"  \U0001f4b3 <b>Buyer</b> \u2014 You are buying and will fund escrow"
+        )
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="\U0001f6d2 I'm the Seller", callback_data="escrow_role_seller"),
+                InlineKeyboardButton(text="\U0001f4b3 I'm the Buyer", callback_data="escrow_role_buyer"),
+            ],
+            [InlineKeyboardButton(text="\u274c Cancel", callback_data="cmd_home")],
+        ]))
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data.in_({"escrow_role_seller", "escrow_role_buyer"}))
+async def cb_escrow_role(callback: CallbackQuery):
+    try:
+        action, data = get_pending_action(callback.from_user.id)
+        role = "seller" if callback.data == "escrow_role_seller" else "buyer"
+        set_pending_action(callback.from_user.id, "escrow_description", {
+            **data, "my_role": role,
+        })
+        await callback.message.edit_text(
+            f"\U0001f6e1 <b>Escrow Description</b>\n\n"
+            f"Briefly describe what's being traded:\n"
+            f"e.g. \"iPhone 15 Pro Max\", \"Logo design\", \"100 USD transfer\"",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data == "escrow_list")
+async def cb_escrow_list(callback: CallbackQuery):
+    try:
+        escrows = get_user_escrows(str(callback.from_user.id))
+        if not escrows:
+            await callback.message.edit_text(
+                f"\U0001f6e1 <b>My Escrows</b>\n\nNo active escrows. Create one to get started {STAR}",
+                reply_markup=escrow_create_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        await callback.message.edit_text(
+            f"\U0001f6e1 <b>My Escrows</b> ({len(escrows)} active)\n\n"
+            f"Tap an escrow to view details:",
+            reply_markup=escrow_list_keyboard(escrows),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"escrow_list error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.startswith("escrow_view_"))
+async def cb_escrow_view(callback: CallbackQuery):
+    try:
+        escrow_id = callback.data.replace("escrow_view_", "")
+        escrow = get_escrow(escrow_id)
+        if not escrow:
+            await callback.answer("Escrow not found")
+            return
+
+        uid = str(callback.from_user.id)
+        role = "seller" if escrow["seller_id"] == uid else "buyer"
+        status = escrow.get("status", "pending")
+        amount = float(escrow.get("amount_sidi", 0))
+        naira = sidi_to_naira(amount)
+
+        seller = get_user(escrow["seller_id"])
+        buyer = get_user(escrow["buyer_id"])
+        s_name = seller.get("username", "") if seller else escrow["seller_id"]
+        b_name = buyer.get("username", "") if buyer else escrow["buyer_id"]
+
+        status_display = {
+            "pending": "\u23f3 Pending (awaiting funding)",
+            "funded": "\U0001f4b3 Funded (awaiting delivery)",
+            "delivered": "\U0001f4e6 Delivered (awaiting confirmation)",
+            "disputed": "\u26a0\ufe0f Disputed (under review)",
+            "released": "\u2705 Completed",
+            "cancelled": "\u274c Cancelled",
+        }.get(status, status)
+
+        text = (
+            f"\U0001f6e1 <b>Escrow Details</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  ID:          <code>{escrow_id}</code>\n"
+            f"  Amount:      <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n"
+            f"  Seller:      @{s_name}\n"
+            f"  Buyer:       @{b_name}\n"
+            f"  Your role:   {role.title()}\n"
+            f"  Description: {_safe_escape(escrow.get('description', ''))}\n"
+            f"  Status:      {status_display}\n"
+            f"  Created:     {fmt_relative_time(escrow.get('created_at', 0))}\n\n"
+            f"{DIVIDER}"
+        )
+        from bot.keyboards import escrow_detail_keyboard
+        await callback.message.edit_text(text, reply_markup=escrow_detail_keyboard(escrow_id, role, status))
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"escrow_view error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.startswith("escrow_fund_"))
+async def cb_escrow_fund(callback: CallbackQuery, bot: Bot):
+    try:
+        escrow_id = callback.data.replace("escrow_fund_", "")
+        result = fund_escrow(escrow_id, str(callback.from_user.id))
+        if result.get("success"):
+            escrow = get_escrow(escrow_id)
+            amount = float(escrow.get("amount_sidi", 0))
+            await callback.message.edit_text(
+                f"\u2705 <b>Escrow Funded!</b>\n\n"
+                f"<b>{fmt_number(amount)} SIDI</b> locked in escrow.\n\n"
+                f"The seller can now deliver. Once you confirm\n"
+                f"delivery, the funds will be released {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            # Notify seller
+            from services.notifications import notify_user as _notify
+            await _notify(
+                bot, escrow["seller_id"],
+                f"\U0001f4b3 <b>Escrow Funded!</b>\n\n"
+                f"Buyer funded escrow <code>{escrow_id}</code>.\n"
+                f"Amount: <b>{fmt_number(amount)} SIDI</b>\n\n"
+                f"Please deliver now. Type /escrow to manage {STAR}",
+            )
+        else:
+            await callback.answer(result.get("message", "Could not fund"), show_alert=True)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"escrow_fund error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.startswith("escrow_deliver_"))
+async def cb_escrow_deliver(callback: CallbackQuery, bot: Bot):
+    try:
+        escrow_id = callback.data.replace("escrow_deliver_", "")
+        result = mark_delivered(escrow_id, str(callback.from_user.id))
+        if result.get("success"):
+            escrow = get_escrow(escrow_id)
+            await callback.message.edit_text(
+                f"\U0001f4e6 <b>Marked as Delivered!</b>\n\n"
+                f"Waiting for buyer to confirm delivery.\n"
+                f"Funds will be released once confirmed {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            from services.notifications import notify_user as _notify
+            await _notify(
+                bot, escrow["buyer_id"],
+                f"\U0001f4e6 <b>Delivery Notification</b>\n\n"
+                f"Seller marked escrow <code>{escrow_id}</code> as delivered.\n\n"
+                f"Please confirm if you received everything.\n"
+                f"Type /escrow to confirm or dispute {STAR}",
+            )
+        else:
+            await callback.answer(result.get("message", "Error"), show_alert=True)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"escrow_deliver error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.startswith("escrow_confirm_"))
+async def cb_escrow_confirm(callback: CallbackQuery, bot: Bot):
+    try:
+        escrow_id = callback.data.replace("escrow_confirm_", "")
+        escrow = get_escrow(escrow_id)
+        if not escrow:
+            await callback.answer("Escrow not found")
+            return
+
+        result = confirm_delivery(escrow_id, str(callback.from_user.id))
+        if result.get("success"):
+            amount = float(result.get("amount", 0))
+            await callback.message.edit_text(
+                f"\u2705 <b>Escrow Complete!</b>\n\n"
+                f"<b>{fmt_number(amount)} SIDI</b> has been released to the seller.\n\n"
+                f"Trade completed successfully. Thank you for\n"
+                f"using Sidicoin Escrow {STAR}",
+                reply_markup=home_keyboard(),
+            )
+            from services.notifications import notify_user as _notify
+            await _notify(
+                bot, escrow["seller_id"],
+                f"\u2705 <b>Funds Released!</b>\n\n"
+                f"Buyer confirmed delivery on <code>{escrow_id}</code>.\n"
+                f"+<b>{fmt_number(amount)} SIDI</b> added to your wallet {STAR}",
+            )
+        else:
+            await callback.answer(result.get("message", "Error"), show_alert=True)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"escrow_confirm error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data.startswith("escrow_dispute_"))
+async def cb_escrow_dispute(callback: CallbackQuery):
+    try:
+        escrow_id = callback.data.replace("escrow_dispute_", "")
+        set_pending_action(callback.from_user.id, "escrow_dispute_reason", {"escrow_id": escrow_id})
+        await callback.message.edit_text(
+            f"\u26a0\ufe0f <b>File a Dispute</b>\n\n"
+            f"Escrow: <code>{escrow_id}</code>\n\n"
+            f"Please describe the issue. Our team will\n"
+            f"review and resolve this fairly.\n\n"
+            f"Type your reason below:",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("escrow_cancel_"))
+async def cb_escrow_cancel(callback: CallbackQuery):
+    try:
+        escrow_id = callback.data.replace("escrow_cancel_", "")
+        result = cancel_escrow(escrow_id, str(callback.from_user.id))
+        if result.get("success"):
+            await callback.message.edit_text(
+                f"\u274c Escrow <code>{escrow_id}</code> cancelled {STAR}",
+                reply_markup=home_keyboard(),
+            )
+        else:
+            await callback.answer(result.get("message", "Error"), show_alert=True)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"escrow_cancel error: {e}")
+        await callback.answer("Something went wrong")
+
+
+# =====================================================================
+#  SUPPORT / DONATE
+# =====================================================================
+
+@router.message(Command("support", "donate"))
+async def cmd_support(message: Message):
+    """Support Sidicoin with a voluntary donation."""
+    try:
+        user = get_user(message.from_user.id)
+        if not user:
+            await message.answer(f"Type /start to create your wallet first {STAR}")
+            return
+
+        total_donated = get_stat("total_donations")
+        text = (
+            f"{STAR} <b>Support Sidicoin</b>\n\n"
+            f"Sidicoin is committed to keeping all transfers\n"
+            f"and transactions <b>100% free</b> for everyone.\n\n"
+            f"Your voluntary support helps us:\n\n"
+            f"  \u2022 Keep zero fees forever\n"
+            f"  \u2022 Expand to more countries\n"
+            f"  \u2022 Improve security & features\n"
+            f"  \u2022 Run servers & infrastructure\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Total community support: <b>{fmt_number(total_donated)} SIDI</b>\n"
+            f"  ({fmt_naira(sidi_to_naira(total_donated))})\n\n"
+            f"{DIVIDER}\n\n"
+            f"Every SIDI counts. Thank you {STAR}"
+        )
+        await message.answer(text, reply_markup=support_keyboard())
+
+    except Exception as e:
+        logger.error(f"/support error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}")
+
+
+@router.callback_query(F.data == "cmd_support")
+async def cb_support(callback: CallbackQuery):
+    try:
+        total_donated = get_stat("total_donations")
+        text = (
+            f"{STAR} <b>Support Sidicoin</b>\n\n"
+            f"Help us keep everything free.\n\n"
+            f"  Total support: <b>{fmt_number(total_donated)} SIDI</b>"
+        )
+        await callback.message.edit_text(text, reply_markup=support_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+@router.callback_query(F.data == "support_sidi")
+async def cb_support_sidi(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        balance = float(user.get("sidi_balance", 0))
+        set_pending_action(callback.from_user.id, "support_amount")
+        await callback.message.edit_text(
+            f"{STAR} <b>Support with SIDI</b>\n\n"
+            f"Balance: <b>{fmt_number(balance)} SIDI</b>\n\n"
+            f"How much would you like to donate?",
+            reply_markup=cancel_keyboard(),
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+# =====================================================================
 #  GAMES
 # =====================================================================
 
@@ -3239,6 +3678,207 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         })
         clear_pending_action(user_id)
         await message.answer(text_msg, reply_markup=after_game_keyboard())
+
+    # -- Escrow flows --
+    elif action == "escrow_description":
+        if len(text) < 3:
+            await message.answer("Please provide a short description (3+ chars):", reply_markup=cancel_keyboard())
+            return
+        set_pending_action(user_id, "escrow_amount", {**data, "description": text[:200]})
+        await message.answer(
+            f"{STAR} <b>Escrow Amount</b>\n\n"
+            f"How much SIDI to escrow?\n"
+            f"This amount will be held until both parties confirm.",
+            reply_markup=cancel_keyboard(),
+        )
+
+    elif action == "escrow_amount":
+        valid, amount = is_valid_amount(text)
+        if not valid or amount <= 0:
+            await message.answer("Enter a valid amount:", reply_markup=cancel_keyboard())
+            return
+        set_pending_action(user_id, "escrow_counterparty", {**data, "amount": amount})
+        role = data.get("my_role", "seller")
+        other_role = "buyer" if role == "seller" else "seller"
+        await message.answer(
+            f"{STAR} <b>Escrow Counterparty</b>\n\n"
+            f"Enter the @username of the {other_role}:",
+            reply_markup=cancel_keyboard(),
+        )
+
+    elif action == "escrow_counterparty":
+        if not is_valid_username(text):
+            await message.answer("Enter a valid @username:", reply_markup=cancel_keyboard())
+            return
+        clean = clean_username(text)
+        other_user = find_user_by_username(clean)
+        if not other_user:
+            await message.answer(f"@{clean} hasn't joined Sidicoin. Invite them first.", reply_markup=home_button_keyboard())
+            clear_pending_action(user_id)
+            return
+        if str(other_user["telegram_id"]) == str(user_id):
+            await message.answer("You can't escrow with yourself.", reply_markup=home_button_keyboard())
+            clear_pending_action(user_id)
+            return
+
+        description = data.get("description", "")
+        amount = float(data.get("amount", 0))
+        escrow_type = data.get("escrow_type", "p2p_trade")
+        my_role = data.get("my_role", "seller")
+
+        if my_role == "seller":
+            seller_id = str(user_id)
+            buyer_id = other_user["telegram_id"]
+        else:
+            buyer_id = str(user_id)
+            seller_id = other_user["telegram_id"]
+
+        import uuid
+        escrow_id = f"ESC-{uuid.uuid4().hex[:8].upper()}"
+        result = create_escrow(
+            escrow_id=escrow_id,
+            seller_id=seller_id,
+            buyer_id=buyer_id,
+            amount_sidi=amount,
+            escrow_type=escrow_type,
+            description=description,
+        )
+
+        clear_pending_action(user_id)
+
+        if result.get("success"):
+            from bot.keyboards import escrow_detail_keyboard
+            naira = sidi_to_naira(amount)
+            seller_user = get_user(seller_id)
+            buyer_user = get_user(buyer_id)
+            s_name = seller_user.get("username", "") if seller_user else ""
+            b_name = buyer_user.get("username", "") if buyer_user else ""
+
+            text_msg = (
+                f"\U0001f6e1 <b>Escrow Created!</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  ID:          <code>{escrow_id}</code>\n"
+                f"  Amount:      <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n"
+                f"  Seller:      @{s_name}\n"
+                f"  Buyer:       @{b_name}\n"
+                f"  Type:        {escrow_type.replace('_', ' ').title()}\n"
+                f"  Description: {_safe_escape(description)}\n"
+                f"  Status:      Pending\n\n"
+                f"{DIVIDER}\n\n"
+                f"  The buyer needs to fund this escrow.\n"
+                f"  Once funded, the seller delivers.\n"
+                f"  Buyer confirms, funds release {STAR}"
+            )
+            await message.answer(text_msg, reply_markup=escrow_detail_keyboard(escrow_id, my_role, "pending"))
+
+            # Notify the other party
+            from services.notifications import notify_user as _notify
+            other_id = buyer_id if my_role == "seller" else seller_id
+            other_role = "buyer" if my_role == "seller" else "seller"
+            my_user = get_user(user_id)
+            my_name = my_user.get("username", "") if my_user else ""
+            await _notify(
+                bot, other_id,
+                f"\U0001f6e1 <b>New Escrow Request</b>\n\n"
+                f"@{my_name} created an escrow with you.\n\n"
+                f"  Amount: <b>{fmt_number(amount)} SIDI</b>\n"
+                f"  Your role: {other_role.title()}\n"
+                f"  Description: {_safe_escape(description)}\n"
+                f"  ID: <code>{escrow_id}</code>\n\n"
+                f"Type /escrow to view and manage {STAR}",
+            )
+        else:
+            await message.answer(f"Could not create escrow: {result.get('message', 'Error')} {STAR}", reply_markup=home_button_keyboard())
+
+    # -- Support/donate flow --
+    elif action == "support_amount":
+        valid, amount = is_valid_amount(text)
+        if not valid or amount <= 0:
+            await message.answer("Enter a valid amount:", reply_markup=cancel_keyboard())
+            return
+        user = get_user(user_id)
+        balance = float(user.get("sidi_balance", 0))
+        if balance < amount:
+            await message.answer(f"Insufficient balance. You have {fmt_number(balance)} SIDI.", reply_markup=home_button_keyboard())
+            clear_pending_action(user_id)
+            return
+
+        # Deduct and record
+        update_balance(user_id, -amount)
+        increment_stat("total_donations", amount)
+        add_transaction(user_id, {
+            "type": "donation",
+            "amount": amount,
+            "description": "Support donation to Sidicoin",
+            "timestamp": int(time.time()),
+            "reference": generate_tx_reference(),
+        })
+        clear_pending_action(user_id)
+
+        user = get_user(user_id)
+        new_balance = float(user.get("sidi_balance", 0))
+        donor_name = user.get("full_name", user.get("username", "Anonymous"))
+        naira_val = sidi_to_naira(amount)
+
+        await message.answer(
+            f"{STAR} <b>Thank You, {_safe_escape(donor_name)}!</b>\n\n"
+            f"Your generous donation of <b>{fmt_number(amount)} SIDI</b> "
+            f"({fmt_naira(naira_val)}) helps keep Sidicoin\n"
+            f"running with zero fees for everyone.\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Because of supporters like you:\n\n"
+            f"  \u2022 All transfers stay free\n"
+            f"  \u2022 Escrow trades cost nothing\n"
+            f"  \u2022 Buy/sell with zero fees\n"
+            f"  \u2022 Cross-border payments stay free\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+            f"You are part of what makes Sidicoin possible.\n"
+            f"We truly appreciate your support {STAR}",
+            reply_markup=home_keyboard(),
+        )
+
+        # Notify admin about the donation
+        from services.notifications import notify_admin as _admin_notify
+        await _admin_notify(
+            bot,
+            f"\U0001f4b0 <b>DONATION RECEIVED</b>\n\n"
+            f"From: {_safe_escape(donor_name)} ({user_id})\n"
+            f"Amount: {fmt_number(amount)} SIDI ({fmt_naira(naira_val)})\n"
+            f"Total donated: {fmt_number(get_stat('total_donations'))} SIDI",
+        )
+
+    # -- Escrow dispute reason --
+    elif action == "escrow_dispute_reason":
+        escrow_id = data.get("escrow_id", "")
+        if len(text) < 5:
+            await message.answer("Please describe the issue (5+ characters):", reply_markup=cancel_keyboard())
+            return
+        result = raise_dispute(escrow_id, str(user_id), text)
+        clear_pending_action(user_id)
+
+        if result.get("success"):
+            from services.notifications import notify_admin as _admin_notify
+            escrow = get_escrow(escrow_id)
+            await message.answer(
+                f"\u26a0\ufe0f <b>Dispute Filed</b>\n\n"
+                f"Escrow <code>{escrow_id}</code> is now under review.\n"
+                f"Our team will investigate and resolve this.\n\n"
+                f"Reason: {_safe_escape(text[:200])}\n\n"
+                f"Funds are held safely until resolved {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            if escrow:
+                await _admin_notify(
+                    bot,
+                    f"\u26a0\ufe0f <b>ESCROW DISPUTE</b>\n\n"
+                    f"ID: {escrow_id}\n"
+                    f"By: {user_id}\n"
+                    f"Amount: {escrow.get('amount_sidi')} SIDI\n"
+                    f"Reason: {text[:300]}",
+                )
+        else:
+            await message.answer(f"Could not file dispute: {result.get('message', 'Error')}", reply_markup=home_button_keyboard())
 
     else:
         clear_pending_action(user_id)
