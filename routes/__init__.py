@@ -1,0 +1,1 @@
+# Sidicoin API routes
