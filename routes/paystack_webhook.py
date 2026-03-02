@@ -15,7 +15,7 @@ from services.redis import (
 )
 from utils.formatting import naira_to_sidi, fmt_number, fmt_naira
 
-logger = logging.getLogger("sidicoin.paystack_webhook")
+logger = logging.getLogger("sidiapp.paystack_webhook")
 
 router = APIRouter(prefix="/webhook", tags=["paystack"])
 

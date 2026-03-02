@@ -1,1 +1,1 @@
-# Sidicoin services
+# SidiApp services

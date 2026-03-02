@@ -1,5 +1,5 @@
 """
-Inline keyboard builders for Sidicoin bot.
+Inline keyboard builders for SidiApp bot.
 Every message must end with relevant action buttons.
 Uses descriptive, branded button labels.
 """
@@ -133,7 +133,7 @@ def after_send_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="\U0001f48e Wallet", callback_data="cmd_balance"),
         ],
         [
-            InlineKeyboardButton(text="\U0001f381 Share Sidicoin", callback_data="cmd_refer"),
+            InlineKeyboardButton(text="\U0001f381 Share SidiApp", callback_data="cmd_refer"),
         ],
         [InlineKeyboardButton(text="\U0001f3e0 Home", callback_data="cmd_home")],
     ])
@@ -245,7 +245,7 @@ def refer_keyboard(referral_link: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 text="\U0001f4f2 Share Now",
                 switch_inline_query=(
-                    f"Join me on Sidicoin and get 10 SIDI (\u20a6250) free! "
+                    f"Join me on SidiApp and get 10 SIDI (\u20a6250) free! "
                     f"Send money anywhere in Africa instantly. {referral_link}"
                 ),
             ),
@@ -646,6 +646,6 @@ def whois_tip_keyboard(username: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"\U0001f4b0 Tip @{username}",
-            url=f"https://t.me/SidicoinBot?start=tip_{username}",
+            url=f"https://t.me/SidiAppBot?start=tip_{username}",
         )],
     ])

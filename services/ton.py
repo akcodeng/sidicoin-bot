@@ -10,7 +10,7 @@ from tonsdk.utils import bytes_to_b64str, b64str_to_bytes
 
 from utils.encryption import encrypt_private_key, decrypt_private_key
 
-logger = logging.getLogger("sidicoin.ton")
+logger = logging.getLogger("sidiapp.ton")
 
 
 def create_wallet() -> tuple[str, str]:

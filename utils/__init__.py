@@ -1,1 +1,1 @@
-# Sidicoin utilities
+# SidiApp utilities

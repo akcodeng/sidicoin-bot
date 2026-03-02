@@ -1,5 +1,5 @@
 """
-All Sidicoin bot command handlers.
+All SidiApp bot command handlers.
 Every command shows a loading state first, then edits with the result.
 All messages use HTML parse mode with branded formatting.
 Beautiful, consistent, and professional throughout.
@@ -84,7 +84,7 @@ from bot.keyboards import (
     merchant_keyboard, merchant_apply_keyboard, merchant_pay_confirm_keyboard,
 )
 
-logger = logging.getLogger("sidicoin.commands")
+logger = logging.getLogger("sidiapp.commands")
 router = Router()
 
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "")
@@ -221,7 +221,7 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 
         # -- New user --
         loading_msg = await message.answer(
-            f"\u26a1 Setting up your Sidicoin wallet..."
+            f"\u26a1 Setting up your SidiApp wallet..."
         )
 
         # Anti-fraud: generate fingerprint and check for multi-accounts
@@ -287,7 +287,7 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
                         await notify_user(
                             bot, referrer_id,
                             f"{STAR} <b>Referral Bonus!</b>\n\n"
-                            f"<b>{_safe_escape(first_name)}</b> just joined Sidicoin "
+                            f"<b>{_safe_escape(first_name)}</b> just joined SidiApp "
                             f"through your referral link.\n\n"
                             f"+<b>10 SIDI</b> ({fmt_naira(sidi_to_naira(10))}) "
                             f"will be added to your wallet once they "
@@ -477,7 +477,7 @@ async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient
 
         invite_link = f"https://t.me/{bot_username}?start=ref_{sender_id}"
         await message.answer(
-            f"@{clean_user} hasn't joined Sidicoin yet.{suggest_text}\n\n"
+            f"@{clean_user} hasn't joined SidiApp yet.{suggest_text}\n\n"
             f"Invite them:\n<code>{invite_link}</code> {STAR}",
             reply_markup=home_button_keyboard(),
         )
@@ -946,7 +946,7 @@ async def cmd_premium(message: Message):
             return
 
         text = (
-            f"{STAR} <b>Sidicoin Premium</b>\n\n"
+            f"{STAR} <b>SidiApp Premium</b>\n\n"
             f"{DIVIDER}\n\n"
             f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
             f"  Daily Limit       50K      <b>500K</b>\n"
@@ -992,7 +992,7 @@ async def _show_leaderboard(target, user: dict, is_edit: bool = False):
     balance = float(user.get("sidi_balance", 0))
 
     medals = ["\U0001f947", "\U0001f948", "\U0001f949", "4.", "5."]
-    lines = [f"{STAR} <b>Top Sidicoin Holders</b>\n", DIVIDER, ""]
+    lines = [f"{STAR} <b>Top SidiApp Holders</b>\n", DIVIDER, ""]
 
     for i, (uid, score) in enumerate(leaders):
         leader_user = get_user(uid)
@@ -1036,7 +1036,7 @@ async def cmd_price(message: Message):
         usd_equiv = SIDI_PRICE_NGN / usd_rate
 
         text = (
-            f"{STAR} <b>Sidicoin Price</b>\n\n"
+            f"{STAR} <b>SidiApp Price</b>\n\n"
             f"{DIVIDER}\n\n"
             f"  1 SIDI = <b>{fmt_naira(SIDI_PRICE_NGN)}</b>\n"
             f"  1 SIDI = <b>${usd_equiv:.6f}</b>\n\n"
@@ -1077,7 +1077,7 @@ async def cmd_stats(message: Message):
         supply_pct = (circulating / 10_000_000_000) * 100
 
         text = (
-            f"{STAR} <b>Sidicoin Network Stats</b>\n\n"
+            f"{STAR} <b>SidiApp Network Stats</b>\n\n"
             f"{DIVIDER}\n\n"
             f"  Total Supply     10,000,000,000 SIDI\n"
             f"  Circulating      {fmt_number(circulating)} SIDI ({supply_pct:.4f}%)\n"
@@ -1140,7 +1140,7 @@ async def cmd_settings(message: Message):
 async def cmd_help(message: Message):
     """Show all commands organized by category."""
     text = (
-        f"{STAR} <b>Sidicoin Commands</b>\n\n"
+        f"{STAR} <b>SidiApp Commands</b>\n\n"
         f"{DIVIDER}\n\n"
         f"  <b>\U0001f48e Wallet</b>\n"
         f"  /balance \u2014 Check your SIDI balance\n"
@@ -1168,9 +1168,9 @@ async def cmd_help(message: Message):
         f"  <b>\U0001f3e2 Business</b>\n"
         f"  /merchant \u2014 Accept SIDI payments\n\n"
         f"  <b>\u2764\ufe0f Support</b>\n"
-        f"  /support \u2014 Help keep Sidicoin free\n\n"
+        f"  /support \u2014 Help keep SidiApp free\n\n"
         f"  <b>\u2139\ufe0f Info</b>\n"
-        f"  /about \u2014 About Sidicoin\n"
+        f"  /about \u2014 About SidiApp\n"
         f"  /help \u2014 This menu\n\n"
         f"{DIVIDER}\n"
         f"  {BRAND} {STAR}"
@@ -1235,14 +1235,14 @@ async def cmd_convert(message: Message):
 
 @router.message(Command("about"))
 async def cmd_about(message: Message):
-    """About Sidicoin."""
+    """About SidiApp."""
     text = (
-        f"{STAR} <b>About Sidicoin</b>\n\n"
-        f"Sidicoin (SIDI) is a digital currency for instant "
+        f"{STAR} <b>About SidiApp</b>\n\n"
+        f"SidiApp (SIDI) is a digital currency for instant "
         f"money transfers \u2014 with one mission: make sending "
         f"money worldwide instant, free, and accessible to everyone.\n\n"
         f"{DIVIDER}\n\n"
-        f"  <b>Why Sidicoin?</b>\n\n"
+        f"  <b>Why SidiApp?</b>\n\n"
         f"  \u2022 Zero fees on everything\n"
         f"  \u2022 No bank account required\n"
         f"  \u2022 Works in 13+ countries\n"
@@ -1684,7 +1684,7 @@ async def cb_refer(callback: CallbackQuery, bot: Bot):
 async def cb_help(callback: CallbackQuery):
     try:
         text = (
-            f"{STAR} <b>Sidicoin Commands</b>\n\n"
+            f"{STAR} <b>SidiApp Commands</b>\n\n"
             f"  /balance \u2014 Wallet\n"
             f"  /send \u2014 Send SIDI\n"
             f"  /buy \u2014 Buy SIDI\n"
@@ -1695,7 +1695,7 @@ async def cb_help(callback: CallbackQuery):
             f"  /premium \u2014 Upgrade\n"
             f"  /price \u2014 Market data\n"
             f"  /merchant \u2014 Business payments\n"
-            f"  /about \u2014 About Sidicoin\n\n"
+            f"  /about \u2014 About SidiApp\n\n"
             f"  {BRAND} {STAR}"
         )
         await callback.message.edit_text(text, reply_markup=help_keyboard(), disable_web_page_preview=True)
@@ -1809,7 +1809,7 @@ async def cb_premium(callback: CallbackQuery):
             await callback.answer()
             return
         text = (
-            f"{STAR} <b>Sidicoin Premium</b>\n\n"
+            f"{STAR} <b>SidiApp Premium</b>\n\n"
             f"{DIVIDER}\n\n"
             f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
             f"  Daily Limit       50K      <b>500K</b>\n"
@@ -2041,12 +2041,12 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
         name = sender.get("full_name", "there")
         if tx_count == 1:
             await callback.message.answer(
-                f"\U0001f389 Your first Sidicoin transfer, {_safe_escape(name)}! "
+                f"\U0001f389 Your first SidiApp transfer, {_safe_escape(name)}! "
                 f"Welcome to the future of African finance {STAR}"
             )
         elif tx_count == 10:
             await callback.message.answer(
-                f"\U0001f525 10 transfers done! True Sidicoin power user, {_safe_escape(name)} {STAR}"
+                f"\U0001f525 10 transfers done! True SidiApp power user, {_safe_escape(name)} {STAR}"
             )
 
         await callback.answer("Transfer successful!")
@@ -2142,12 +2142,12 @@ async def cb_receipt_download(callback: CallbackQuery):
 
         # Create file buffer
         file_bytes = receipt_text.encode("utf-8")
-        filename = f"sidicoin_receipt_{ref}.txt"
+        filename = f"sidiapp_receipt_{ref}.txt"
         doc = BufferedInputFile(file=file_bytes, filename=filename)
 
         await callback.message.answer_document(
             document=doc,
-            caption=f"{STAR} Your Sidicoin receipt \u2014 Ref: <code>{ref}</code>",
+            caption=f"{STAR} Your SidiApp receipt \u2014 Ref: <code>{ref}</code>",
             parse_mode="HTML",
         )
         await callback.answer("Receipt ready!")
@@ -2184,7 +2184,7 @@ async def cb_buy_proceed(callback: CallbackQuery):
         result = await create_bank_transfer_charge(
             reference=reference,
             amount=total_ngn,
-            customer_name=user.get("full_name", "Sidicoin User"),
+            customer_name=user.get("full_name", "SidiApp User"),
         )
 
         if not result.get("success"):
@@ -2447,7 +2447,7 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
         sell_txns = [t for t in user.get("transactions", []) if t.get("type") == "sell"]
         if len(sell_txns) <= 1:
             await callback.message.answer(
-                f"\U0001f4b0 First cashout done! That's your Sidicoin working for you {STAR}"
+                f"\U0001f4b0 First cashout done! That's your SidiApp working for you {STAR}"
             )
 
         await callback.answer("Cashout processed!")
@@ -2557,8 +2557,8 @@ async def cb_premium_upgrade(callback: CallbackQuery):
         result = await create_bank_transfer_charge(
             reference=reference,
             amount=amount,
-            customer_name=user.get("full_name", "Sidicoin User"),
-            narration="Sidicoin Premium Subscription",
+            customer_name=user.get("full_name", "SidiApp User"),
+            narration="SidiApp Premium Subscription",
         )
 
         if not result.get("success"):
@@ -2761,7 +2761,7 @@ async def cmd_escrow(message: Message):
         rating = float(user.get("escrow_rating", 5.0))
 
         text = (
-            f"\U0001f6e1 <b>Sidicoin Escrow</b>\n\n"
+            f"\U0001f6e1 <b>SidiApp Escrow</b>\n\n"
             f"Trade safely on Telegram. Your money is\n"
             f"held securely until both parties confirm.\n\n"
             f"{DIVIDER}\n\n"
@@ -2796,7 +2796,7 @@ async def cb_escrow(callback: CallbackQuery):
             return
         active = get_user_escrows(str(callback.from_user.id))
         text = (
-            f"\U0001f6e1 <b>Sidicoin Escrow</b>\n\n"
+            f"\U0001f6e1 <b>SidiApp Escrow</b>\n\n"
             f"Trade safely. Create or manage escrows.\n\n"
             f"  Active: <b>{len(active)}</b>\n"
             f"  Completed: <b>{user.get('escrow_completed', 0)}</b>"
@@ -3119,7 +3119,7 @@ async def cb_escrow_cancel(callback: CallbackQuery):
 
 @router.message(Command("support", "donate"))
 async def cmd_support(message: Message):
-    """Support Sidicoin with a voluntary donation."""
+    """Support SidiApp with a voluntary donation."""
     try:
         user = get_user(message.from_user.id)
         if not user:
@@ -3128,8 +3128,8 @@ async def cmd_support(message: Message):
 
         total_donated = get_stat("total_donations")
         text = (
-            f"{STAR} <b>Support Sidicoin</b>\n\n"
-            f"Sidicoin is committed to keeping all transfers\n"
+            f"{STAR} <b>Support SidiApp</b>\n\n"
+            f"SidiApp is committed to keeping all transfers\n"
             f"and transactions <b>100% free</b> for everyone.\n\n"
             f"Your voluntary support helps us:\n\n"
             f"  \u2022 Keep zero fees forever\n"
@@ -3154,7 +3154,7 @@ async def cb_support(callback: CallbackQuery):
     try:
         total_donated = get_stat("total_donations")
         text = (
-            f"{STAR} <b>Support Sidicoin</b>\n\n"
+            f"{STAR} <b>Support SidiApp</b>\n\n"
             f"Help us keep everything free.\n\n"
             f"  Total support: <b>{fmt_number(total_donated)} SIDI</b>"
         )
@@ -3227,7 +3227,7 @@ async def cmd_merchant(message: Message):
             )
         else:
             text = (
-                f"\U0001f3e2 <b>Sidicoin for Business</b>\n\n"
+                f"\U0001f3e2 <b>SidiApp for Business</b>\n\n"
                 f"Accept SIDI payments from customers.\n\n"
                 f"{DIVIDER}\n\n"
                 f"  <b>How it works:</b>\n\n"
@@ -3622,7 +3622,7 @@ async def cmd_game(message: Message):
             )
 
         text = (
-            f"\U0001f3ae <b>Sidicoin Games</b>\n\n"
+            f"\U0001f3ae <b>SidiApp Games</b>\n\n"
             f"Play to win SIDI! Tap <b>Play Now</b> to\n"
             f"open the full game experience.\n\n"
             f"{DIVIDER}\n\n"
@@ -3650,7 +3650,7 @@ async def cb_game(callback: CallbackQuery):
             return
         balance = float(user.get("sidi_balance", 0))
         text = (
-            f"\U0001f3ae <b>Sidicoin Games</b>\n\n"
+            f"\U0001f3ae <b>SidiApp Games</b>\n\n"
             f"Play to win SIDI! Choose a game:\n\n"
             f"{DIVIDER}\n\n"
             f"  \U0001fa99 <b>Coin Flip</b> \u2014 2x payout\n"
@@ -4122,7 +4122,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
             bot_username = await _get_bot_username(bot)
             invite_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
             await message.answer(
-                f"@{clean} hasn't joined Sidicoin yet.\n\n"
+                f"@{clean} hasn't joined SidiApp yet.\n\n"
                 f"Invite them:\n<code>{invite_link}</code> {STAR}",
                 reply_markup=home_button_keyboard(),
             )
@@ -4508,7 +4508,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
             return
 
         ref = f"M{int(time.time())}"
-        merchant_link = f"https://t.me/SidicoinBot?start=pay_{user_id}_{link_amount}_{ref}"
+        merchant_link = f"https://t.me/SidiAppBot?start=pay_{user_id}_{link_amount}_{ref}"
         naira = sidi_to_naira(link_amount)
 
         clear_pending_action(user_id)
@@ -4649,7 +4649,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         clean = clean_username(text)
         other_user = find_user_by_username(clean)
         if not other_user:
-            await message.answer(f"@{clean} hasn't joined Sidicoin. Invite them first.", reply_markup=home_button_keyboard())
+            await message.answer(f"@{clean} hasn't joined SidiApp. Invite them first.", reply_markup=home_button_keyboard())
             clear_pending_action(user_id)
             return
         if str(other_user["telegram_id"]) == str(user_id):
@@ -4745,7 +4745,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         add_transaction(user_id, {
             "type": "donation",
             "amount": amount,
-            "description": "Support donation to Sidicoin",
+            "description": "Support donation to SidiApp",
             "timestamp": int(time.time()),
             "reference": generate_tx_reference(),
         })
@@ -4759,7 +4759,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         await message.answer(
             f"{STAR} <b>Thank You, {_safe_escape(donor_name)}!</b>\n\n"
             f"Your generous donation of <b>{fmt_number(amount)} SIDI</b> "
-            f"({fmt_naira(naira_val)}) helps keep Sidicoin\n"
+            f"({fmt_naira(naira_val)}) helps keep SidiApp\n"
             f"running with zero fees for everyone.\n\n"
             f"{DIVIDER}\n\n"
             f"  Because of supporters like you:\n\n"
@@ -4769,7 +4769,7 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
             f"  \u2022 Cross-border payments stay free\n\n"
             f"{DIVIDER}\n\n"
             f"  \U0001f48e Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
-            f"You are part of what makes Sidicoin possible.\n"
+            f"You are part of what makes SidiApp possible.\n"
             f"We truly appreciate your support {STAR}",
             reply_markup=home_keyboard(),
         )

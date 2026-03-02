@@ -1,8 +1,8 @@
 import type { Metadata, Viewport } from "next"
 
 export const metadata: Metadata = {
-  title: "Sidicoin Games",
-  description: "Play games and win SIDI - Coin Flip, Dice Roll, Lucky Number",
+  title: "SidiApp Games",
+  description: "Play games and win SIDI on SidiApp - Coin Flip, Dice Roll, Lucky Number",
 }
 
 export const viewport: Viewport = {

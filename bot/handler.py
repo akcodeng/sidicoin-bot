@@ -10,7 +10,7 @@ from aiogram import Dispatcher
 from bot.commands import router as commands_router
 from bot.group_commands import group_router
 
-logger = logging.getLogger("sidicoin.handler")
+logger = logging.getLogger("sidiapp.handler")
 
 
 def register_all_handlers(dp: Dispatcher) -> None:

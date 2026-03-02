@@ -153,7 +153,7 @@ export default function GamePage() {
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center text-xs font-bold text-black">
             S
           </div>
-          <span className="text-sm font-semibold text-neutral-300">Sidicoin Games</span>
+          <span className="text-sm font-semibold text-neutral-300">SidiApp Games</span>
         </div>
         {activeGame && gameState !== "idle" && (
           <button

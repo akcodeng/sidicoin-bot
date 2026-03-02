@@ -1,1 +1,1 @@
-# Sidicoin bot handlers
+# SidiApp bot handlers

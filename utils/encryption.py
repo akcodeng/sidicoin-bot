@@ -14,7 +14,7 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
 if not ENCRYPTION_KEY:
     import logging
-    logging.getLogger("sidicoin.encryption").warning(
+    logging.getLogger("sidiapp.encryption").warning(
         "ENCRYPTION_KEY not set! Private key encryption will be insecure."
     )
 

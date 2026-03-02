@@ -18,7 +18,7 @@ import time
 
 import httpx
 
-logger = logging.getLogger("sidicoin.korapay")
+logger = logging.getLogger("sidiapp.korapay")
 
 KORAPAY_SECRET_KEY = os.getenv("KORAPAY_SECRET_KEY", "")
 KORAPAY_PUBLIC_KEY = os.getenv("KORAPAY_PUBLIC_KEY", "")
@@ -94,8 +94,8 @@ async def create_bank_transfer_charge(
     reference: str,
     amount: float,
     customer_name: str,
-    customer_email: str = "user@sidicoin.app",
-    narration: str = "Sidicoin Purchase",
+    customer_email: str = "user@sidiapp.app",
+    narration: str = "SidiApp Purchase",
 ) -> dict:
     """
     Create a dynamic one-time bank account for payment collection.
@@ -120,7 +120,7 @@ async def create_bank_transfer_charge(
         "narration": narration,
         "notification_url": "https://coin.sidihost.sbs/webhook/korapay",
         "customer": {
-            "name": customer_name or "Sidicoin User",
+            "name": customer_name or "SidiApp User",
             "email": customer_email,
         },
         "merchant_bears_cost": False,
@@ -141,7 +141,7 @@ async def create_bank_transfer_charge(
             "success": True,
             "bank_name": bank.get("bank_name", "Wema Bank"),
             "account_number": bank.get("account_number", ""),
-            "account_name": bank.get("account_name", "Sidicoin"),
+            "account_name": bank.get("account_name", "SidiApp"),
             "bank_code": bank.get("bank_code", ""),
             "reference": data.get("reference", reference),
             "amount": float(data.get("amount_expected", charge_amount)),
@@ -248,7 +248,7 @@ async def process_payout(
     bank_code: str,
     account_number: str,
     account_name: str,
-    narration: str = "Sidicoin Cashout",
+    narration: str = "SidiApp Cashout",
 ) -> dict:
     """
     Send money to a bank account via Korapay disbursement.
@@ -270,7 +270,7 @@ async def process_payout(
             },
             "customer": {
                 "name": account_name,
-                "email": "user@sidicoin.app",
+                "email": "user@sidiapp.app",
             },
         },
     }

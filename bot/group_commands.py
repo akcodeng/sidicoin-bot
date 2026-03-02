@@ -1,5 +1,5 @@
 """
-Group & channel commands for Sidicoin bot.
+Group & channel commands for SidiApp bot.
 Handles all group-specific features: tipping, giveaways, rain,
 verification, user lookup, random picks, and group AI mentions.
 """
@@ -37,14 +37,14 @@ from bot.keyboards import (
     verify_start_keyboard, whois_tip_keyboard,
 )
 
-logger = logging.getLogger("sidicoin.group")
+logger = logging.getLogger("sidiapp.group")
 
 group_router = Router()
 
 # Only handle group and supergroup messages
 GROUP_FILTER = F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP})
 
-BOT_USERNAME = os.getenv("BOT_USERNAME", "SidicoinBot").lower()
+BOT_USERNAME = os.getenv("BOT_USERNAME", "SidiAppBot").lower()
 
 # Verification questions bank
 VERIFY_QUESTIONS = [
@@ -53,9 +53,9 @@ VERIFY_QUESTIONS = [
     {"q": "What is 100 - 37?", "a": "63"},
     {"q": "What is 9 x 9?", "a": "81"},
     {"q": "What is 56 / 8?", "a": "7"},
-    {"q": "What is the currency of Sidicoin?", "a": "sidi"},
-    {"q": "What command sends money in Sidicoin?", "a": "/send"},
-    {"q": "Are Sidicoin transfers free? (yes/no)", "a": "yes"},
+    {"q": "What is the currency of SidiApp?", "a": "sidi"},
+    {"q": "What command sends money in SidiApp?", "a": "/send"},
+    {"q": "Are SidiApp transfers free? (yes/no)", "a": "yes"},
     {"q": "What command checks your balance?", "a": "/balance"},
     {"q": "What is 2 + 2?", "a": "4"},
 ]
@@ -142,7 +142,7 @@ async def cmd_tip(message: Message, bot: Bot):
     sender = get_user(sender_id)
     if not sender:
         await message.reply(
-            f"You need a Sidicoin wallet first.\n"
+            f"You need a SidiApp wallet first.\n"
             f"Start here: https://t.me/{BOT_USERNAME}?start=new"
         )
         return
@@ -162,7 +162,7 @@ async def cmd_tip(message: Message, bot: Bot):
         target = find_user_by_username(target_username)
         if not target:
             await message.reply(
-                f"@{_esc(target_username)} doesn't have a Sidicoin wallet yet.\n"
+                f"@{_esc(target_username)} doesn't have a SidiApp wallet yet.\n"
                 f"They can create one: https://t.me/{BOT_USERNAME}?start=new"
             )
             return
@@ -172,7 +172,7 @@ async def cmd_tip(message: Message, bot: Bot):
         target = get_user(target_id)
         if not target:
             await message.reply(
-                f"{_mention(target_id, target_name)} doesn't have a Sidicoin wallet yet."
+                f"{_mention(target_id, target_name)} doesn't have a SidiApp wallet yet."
             )
             return
 
@@ -351,7 +351,7 @@ async def cb_giveaway_join(callback: CallbackQuery, bot: Bot):
     user = get_user(user_id)
     if not user:
         await callback.answer(
-            f"You need a Sidicoin wallet first! Start at @{BOT_USERNAME}",
+            f"You need a SidiApp wallet first! Start at @{BOT_USERNAME}",
             show_alert=True,
         )
         return
@@ -586,7 +586,7 @@ async def cmd_rain(message: Message, bot: Bot):
 
     if len(eligible) == 0:
         await message.reply(
-            "No active Sidicoin members found in this group.\n"
+            "No active SidiApp members found in this group.\n"
             "Members need to have a wallet and be active recently."
         )
         return
@@ -740,7 +740,7 @@ async def cmd_verify(message: Message, bot: Bot):
 
 @group_router.message(GROUP_FILTER, F.text.regexp(r"^/whois(@\w+)?\s"))
 async def cmd_whois(message: Message):
-    """Check if a user is legitimate and their Sidicoin status."""
+    """Check if a user is legitimate and their SidiApp status."""
     parts = (message.text or "").split()
 
     # Parse target
@@ -781,7 +781,7 @@ async def cmd_whois(message: Message):
             f"  Wallet     {has_wallet} No wallet\n"
             f"  Verified   {verified} Unverified\n\n"
             f"{THIN_DIVIDER}\n\n"
-            f"  This user has no Sidicoin account.\n"
+            f"  This user has no SidiApp account.\n"
             f"  Exercise caution in transactions.\n\n"
             f"{DIVIDER}"
         )
@@ -903,7 +903,7 @@ async def group_ai_mention(message: Message, bot: Bot):
 
     if not clean_text:
         await message.reply(
-            f"Hey {_esc(user_name)}! Ask me anything about Sidicoin.\n\n"
+            f"Hey {_esc(user_name)}! Ask me anything about SidiApp.\n\n"
             f"  <code>@{BOT_USERNAME} how do I send money?</code>"
         )
         return

@@ -14,7 +14,7 @@ from aiogram.enums import ChatType
 
 from services.redis import get_user, check_rate_limit, save_user
 
-logger = logging.getLogger("sidicoin.middleware")
+logger = logging.getLogger("sidiapp.middleware")
 
 # Group chat types
 _GROUP_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}

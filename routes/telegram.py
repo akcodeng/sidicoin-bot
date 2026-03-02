@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from aiogram.types import Update
 
 router = APIRouter()
-logger = logging.getLogger("sidicoin.routes.telegram")
+logger = logging.getLogger("sidiapp.routes.telegram")
 
 
 @router.post("/webhook/telegram")
