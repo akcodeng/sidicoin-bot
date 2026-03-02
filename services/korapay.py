@@ -1,6 +1,13 @@
 """
 Korapay payment service for NGN collections (buy SIDI) and disbursements (sell SIDI).
-Handles virtual account generation, bank verification, and payouts.
+Handles dynamic bank transfer accounts, bank verification, and payouts.
+
+Correct Korapay API endpoints (as of 2026):
+- Bank Transfer (collection): POST /charges/bank_transfer
+- Charge query: GET /charges/:reference
+- Resolve bank account: POST /misc/banks/resolve
+- Disburse (payout): POST /transactions/disburse
+- Bank list: GET /misc/banks?countryCode=NG
 """
 
 import os
@@ -18,56 +25,72 @@ KORAPAY_PUBLIC_KEY = os.getenv("KORAPAY_PUBLIC_KEY", "")
 KORAPAY_WEBHOOK_SECRET = os.getenv("KORAPAY_WEBHOOK_SECRET", "")
 KORAPAY_BASE_URL = "https://api.korapay.com/merchant/api/v1"
 
-HEADERS = {
-    "Authorization": f"Bearer {KORAPAY_SECRET_KEY}",
-    "Content-Type": "application/json",
-}
+
+def _headers() -> dict:
+    """Build auth headers fresh every time (env may reload)."""
+    secret = os.getenv("KORAPAY_SECRET_KEY", KORAPAY_SECRET_KEY)
+    return {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+    }
 
 
-async def _request(method: str, endpoint: str, data: dict = None, retries: int = 3) -> dict:
-    """Make an HTTP request to Korapay API with retry logic."""
+async def _request(
+    method: str, endpoint: str, data: dict = None, retries: int = 3
+) -> dict:
+    """Make an HTTP request to Korapay API with retry + exponential backoff."""
     url = f"{KORAPAY_BASE_URL}{endpoint}"
+    headers = _headers()
+    last_error = None
+
     for attempt in range(retries):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                if method == "GET":
-                    response = await client.get(url, headers=HEADERS, params=data)
-                elif method == "POST":
-                    response = await client.post(url, headers=HEADERS, json=data)
+                if method.upper() == "GET":
+                    resp = await client.get(url, headers=headers, params=data)
+                elif method.upper() == "POST":
+                    resp = await client.post(url, headers=headers, json=data)
                 else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
+                    return {"status": False, "message": f"Unsupported method: {method}"}
 
-                result = response.json()
-                if response.status_code in (200, 201):
-                    return result
-                else:
-                    logger.error(f"Korapay API error ({response.status_code}): {result}")
-                    if attempt == retries - 1:
-                        return {"status": False, "message": result.get("message", "API error")}
+                body = resp.json()
+                logger.info(
+                    f"Korapay {method} {endpoint} -> {resp.status_code}: "
+                    f"{body.get('message', '')}"
+                )
+
+                if resp.status_code in (200, 201):
+                    return body
+
+                # 4xx client errors should not be retried (except 429)
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    return {
+                        "status": False,
+                        "message": body.get("message", f"HTTP {resp.status_code}"),
+                        "data": body.get("data"),
+                    }
+
+                last_error = body.get("message", f"HTTP {resp.status_code}")
+
         except httpx.TimeoutException:
-            logger.warning(f"Korapay request timeout (attempt {attempt + 1}/{retries})")
-            if attempt == retries - 1:
-                return {"status": False, "message": "Request timed out"}
+            last_error = "Request timed out"
+            logger.warning(f"Korapay timeout (attempt {attempt + 1}/{retries})")
         except Exception as e:
-            logger.error(f"Korapay request error (attempt {attempt + 1}/{retries}): {e}")
-            if attempt == retries - 1:
-                return {"status": False, "message": str(e)}
+            last_error = str(e)
+            logger.error(f"Korapay error (attempt {attempt + 1}/{retries}): {e}")
 
-        # Exponential backoff
-        await _sleep(2 ** attempt)
+        if attempt < retries - 1:
+            import asyncio
+            await asyncio.sleep(1.5 ** attempt)
 
-    return {"status": False, "message": "Max retries exceeded"}
-
-
-async def _sleep(seconds: float):
-    """Async sleep helper."""
-    import asyncio
-    await asyncio.sleep(seconds)
+    return {"status": False, "message": last_error or "Max retries exceeded"}
 
 
-# ── Collections (Buy SIDI) ────────────────────────────────────
+# =====================================================================
+#  COLLECTIONS  --  Buy SIDI (Bank Transfer)
+# =====================================================================
 
-async def create_virtual_account(
+async def create_bank_transfer_charge(
     reference: str,
     amount: float,
     customer_name: str,
@@ -75,103 +98,149 @@ async def create_virtual_account(
     narration: str = "Sidicoin Purchase",
 ) -> dict:
     """
-    Create a temporary virtual bank account for payment collection.
-    Returns bank details or error.
+    Create a dynamic one-time bank account for payment collection.
+    Uses Korapay Pay with Bank Transfer API.
+
+    POST /charges/bank_transfer
+    Ref: https://developers.korapay.com/docs/bank-transfers
+
+    Returns dict with success, bank_name, account_number, etc.
     """
+    # Reference must be at least 8 characters per Korapay docs
+    if len(reference) < 8:
+        reference = f"SIDI-{reference}"
+
+    # Per Korapay docs: amount is Number type
+    charge_amount = round(float(amount), 2)
+
     payload = {
         "reference": reference,
-        "amount": amount,
+        "amount": charge_amount,
         "currency": "NGN",
-        "customer": {
-            "name": customer_name,
-            "email": customer_email,
-        },
         "narration": narration,
         "notification_url": "https://coin.sidihost.sbs/webhook/korapay",
-        "type": "bank_transfer",
+        "customer": {
+            "name": customer_name or "Sidicoin User",
+            "email": customer_email,
+        },
+        "merchant_bears_cost": False,
     }
 
-    result = await _request("POST", "/charges/initialize", payload)
+    logger.info(f"Creating bank transfer charge: ref={reference}, amount={charge_amount}")
 
-    if result.get("status") is True or result.get("data"):
-        data = result.get("data", {})
-        bank_info = data.get("bank_account", {})
+    result = await _request("POST", "/charges/bank_transfer", payload)
+
+    if result.get("status") is True and result.get("data"):
+        data = result["data"]
+        bank = data.get("bank_account", {})
+        fee = float(data.get("fee", 0))
+        vat = float(data.get("vat", 0))
+        total_fee = fee + vat
+
         return {
             "success": True,
-            "bank_name": bank_info.get("bank_name", ""),
-            "account_number": bank_info.get("account_number", ""),
-            "account_name": bank_info.get("account_name", "Sidicoin"),
-            "reference": reference,
-            "amount": amount,
-            "expiry": data.get("expiry_date", ""),
-        }
-    else:
-        return {
-            "success": False,
-            "message": result.get("message", "Could not generate payment details"),
+            "bank_name": bank.get("bank_name", "Wema Bank"),
+            "account_number": bank.get("account_number", ""),
+            "account_name": bank.get("account_name", "Sidicoin"),
+            "bank_code": bank.get("bank_code", ""),
+            "reference": data.get("reference", reference),
+            "amount": float(data.get("amount_expected", charge_amount)),
+            "fee": total_fee,
+            "expiry": bank.get("expiry_date_in_utc", ""),
+            "status": data.get("status", "processing"),
         }
 
+    return {
+        "success": False,
+        "message": result.get("message", "Could not generate payment account"),
+    }
 
-# ── Verify payment status ─────────────────────────────────────
+
+# Keep backward-compatible alias
+create_virtual_account = create_bank_transfer_charge
+
+
+# =====================================================================
+#  VERIFY CHARGE STATUS
+# =====================================================================
 
 async def verify_charge(reference: str) -> dict:
-    """Verify the status of a charge/payment."""
+    """Verify the status of a charge via the Charge Query API."""
     result = await _request("GET", f"/charges/{reference}")
 
-    if result.get("data"):
+    if result.get("status") is True and result.get("data"):
         data = result["data"]
         return {
             "success": True,
             "status": data.get("status", ""),
             "amount": float(data.get("amount", 0)),
+            "amount_paid": float(data.get("amount_paid", 0)),
+            "fee": float(data.get("fee", 0)),
             "reference": data.get("reference", reference),
-            "paid_at": data.get("paid_at", ""),
         }
 
     return {"success": False, "message": result.get("message", "Verification failed")}
 
 
-# ── Bank Verification ─────────────────────────────────────────
+# =====================================================================
+#  BANK VERIFICATION
+# =====================================================================
 
 async def get_bank_list() -> list[dict]:
     """Get list of supported Nigerian banks."""
     result = await _request("GET", "/misc/banks", {"countryCode": "NG"})
 
-    if result.get("data"):
-        banks = result["data"]
-        return [{"name": b.get("name", ""), "code": b.get("code", "")} for b in banks]
-
+    if result.get("data") and isinstance(result["data"], list):
+        return [
+            {"name": b.get("name", ""), "code": b.get("code", "")}
+            for b in result["data"]
+        ]
     return []
 
 
 async def verify_bank_account(bank_code: str, account_number: str) -> dict:
     """
-    Verify a bank account and return the account holder's name.
+    Resolve/verify a bank account and return the account holder's name.
+    POST /misc/banks/resolve
     """
     payload = {
         "bank": bank_code,
         "account": account_number,
-        "currency": "NGN",
+        "currency": "NG",
     }
+
+    logger.info(f"Resolving bank account: bank={bank_code}, account={account_number}")
 
     result = await _request("POST", "/misc/banks/resolve", payload)
 
-    if result.get("data"):
+    logger.info(f"Resolve result: status={result.get('status')}, data={result.get('data')}")
+
+    if result.get("status") is True and result.get("data"):
         data = result["data"]
-        return {
-            "success": True,
-            "account_name": data.get("account_name", ""),
-            "account_number": data.get("account_number", account_number),
-            "bank_code": bank_code,
-        }
+        account_name = data.get("account_name", "")
+        if account_name:
+            return {
+                "success": True,
+                "account_name": account_name,
+                "account_number": data.get("account_number", account_number),
+                "bank_name": data.get("bank_name", ""),
+                "bank_code": data.get("bank_code", bank_code),
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Account name not returned. Check account number.",
+            }
 
     return {
         "success": False,
-        "message": result.get("message", "Could not verify account"),
+        "message": result.get("message", "Could not verify account. Check bank code and account number."),
     }
 
 
-# ── Disbursements (Sell SIDI / Cashout) ───────────────────────
+# =====================================================================
+#  DISBURSEMENTS  --  Sell SIDI / Cashout
+# =====================================================================
 
 async def process_payout(
     reference: str,
@@ -183,18 +252,21 @@ async def process_payout(
 ) -> dict:
     """
     Send money to a bank account via Korapay disbursement.
+    POST /transactions/disburse
     """
+    # Per Korapay docs: destination.amount is Number type, two decimal places
+    payout_amount = round(float(amount), 2)
+
     payload = {
         "reference": reference,
         "destination": {
             "type": "bank_account",
-            "amount": amount,
+            "amount": payout_amount,
             "currency": "NGN",
             "narration": narration,
             "bank_account": {
                 "bank": bank_code,
                 "account": account_number,
-                "account_name": account_name,
             },
             "customer": {
                 "name": account_name,
@@ -203,9 +275,11 @@ async def process_payout(
         },
     }
 
+    logger.info(f"Payout request: ref={reference}, amount={payout_amount}, bank={bank_code}, acct={account_number}")
+
     result = await _request("POST", "/transactions/disburse", payload)
 
-    if result.get("data") or result.get("status") is True:
+    if result.get("status") is True or result.get("data"):
         data = result.get("data", {})
         return {
             "success": True,
@@ -220,17 +294,22 @@ async def process_payout(
     }
 
 
-# ── Webhook verification ──────────────────────────────────────
+# =====================================================================
+#  WEBHOOK SIGNATURE VERIFICATION
+# =====================================================================
 
 def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
     """
     Verify Korapay webhook HMAC-SHA512 signature.
+    The signature header is 'x-korapay-signature'.
     """
-    if not KORAPAY_WEBHOOK_SECRET or not signature:
+    secret = os.getenv("KORAPAY_WEBHOOK_SECRET", KORAPAY_WEBHOOK_SECRET)
+    if not secret or not signature:
+        logger.warning("Webhook verification: missing secret or signature")
         return False
 
     expected = hmac.new(
-        KORAPAY_WEBHOOK_SECRET.encode("utf-8"),
+        secret.encode("utf-8"),
         raw_body,
         hashlib.sha512,
     ).hexdigest()
@@ -238,14 +317,18 @@ def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected.lower(), signature.lower())
 
 
-# ── Common bank codes mapping ─────────────────────────────────
+# =====================================================================
+#  COMMON BANK CODES  (Nigerian banks)
+# =====================================================================
 
 COMMON_BANKS = {
     "access": "044",
     "access bank": "044",
     "gtb": "058",
+    "gt bank": "058",
     "gtbank": "058",
     "guaranty trust": "058",
+    "guaranty trust bank": "058",
     "first bank": "011",
     "firstbank": "011",
     "uba": "033",
@@ -254,9 +337,11 @@ COMMON_BANKS = {
     "zenith bank": "057",
     "kuda": "50211",
     "kuda bank": "50211",
+    "kuda mfb": "50211",
     "opay": "999992",
     "palmpay": "999991",
     "moniepoint": "50515",
+    "moniepoint mfb": "50515",
     "wema": "035",
     "wema bank": "035",
     "stanbic": "221",
@@ -280,6 +365,7 @@ COMMON_BANKS = {
     "providus": "101",
     "providus bank": "101",
     "titan trust": "102",
+    "titan trust bank": "102",
     "jaiz": "301",
     "jaiz bank": "301",
     "suntrust": "100",
@@ -289,6 +375,15 @@ COMMON_BANKS = {
     "taj bank": "302",
     "lotus": "303",
     "lotus bank": "303",
+    "9mobile": "120001",
+    "9psb": "120001",
+    "sparkle": "51310",
+    "sparkle mfb": "51310",
+    "carbon": "565",
+    "rubies": "125",
+    "rubies bank": "125",
+    "vfd": "566",
+    "vfd mfb": "566",
 }
 
 

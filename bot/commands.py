@@ -2,6 +2,7 @@
 All Sidicoin bot command handlers.
 Every command shows a loading state first, then edits with the result.
 All messages use HTML parse mode with branded formatting.
+Beautiful, consistent, and professional throughout.
 """
 
 import os
@@ -27,15 +28,18 @@ from services.redis import (
 )
 from services.ton import create_wallet, format_wallet_address
 from services.korapay import (
-    create_virtual_account, verify_bank_account,
+    create_bank_transfer_charge, verify_bank_account,
     process_payout, get_bank_code, COMMON_BANKS,
 )
 from services.groq import get_ai_response, detect_intent
 from services.notifications import notify_user, notify_admin
 from utils.formatting import (
     fmt_number, sidi_to_naira, naira_to_sidi, fmt_sidi, fmt_naira,
-    fmt_timestamp, fmt_date, time_greeting, generate_receipt,
-    generate_tx_reference, DIVIDER, SIDI_PRICE_NGN,
+    fmt_timestamp, fmt_date, fmt_relative_time, time_greeting,
+    generate_receipt, generate_mini_receipt, generate_tx_reference,
+    generate_downloadable_receipt,
+    progress_bar, streak_fire,
+    DIVIDER, THIN_DIVIDER, BRAND, STAR, SIDI_PRICE_NGN,
 )
 from utils.validation import (
     is_valid_username, clean_username, is_valid_amount,
@@ -63,7 +67,9 @@ ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "")
 SIDI_FEE_WALLET = os.getenv("SIDI_FEE_WALLET", "")
 
 
-# ── Utility helpers ────────────────────────────────────────────
+# =====================================================================
+#  UTILITY HELPERS
+# =====================================================================
 
 async def _get_bot_username(bot: Bot) -> str:
     """Get bot username for referral links."""
@@ -72,9 +78,9 @@ async def _get_bot_username(bot: Bot) -> str:
 
 
 def _account_badge(user: dict) -> str:
-    """Return account type display."""
+    """Return account type display string."""
     if check_premium_status(user):
-        return "Premium ✦"
+        return f"Premium {STAR}"
     return "Free"
 
 
@@ -96,19 +102,24 @@ def _transfer_count(user: dict) -> int:
     return sum(1 for t in txns if t.get("type") == "send")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /start
-# ═══════════════════════════════════════════════════════════════
+def _safe_escape(text: str) -> str:
+    """Escape < and > in user-generated text for HTML parse mode."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# =====================================================================
+#  /start
+# =====================================================================
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject, bot: Bot):
-    """Handle /start — new user onboarding or returning user welcome."""
+    """Handle /start -- new user onboarding or returning user welcome."""
     try:
         user_id = message.from_user.id
         from_user = message.from_user
         username = from_user.username or f"user_{user_id}"
         full_name = f"{from_user.first_name or ''} {from_user.last_name or ''}".strip()
-        photo_url = ""
+        first_name = from_user.first_name or username
 
         # Check for referral code
         referred_by = ""
@@ -118,26 +129,32 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         existing_user = get_user(user_id)
 
         if existing_user:
-            # Returning user — show balance summary
+            # -- Returning user --
             balance = float(existing_user.get("sidi_balance", 0))
             naira = sidi_to_naira(balance)
-            greeting = time_greeting(full_name or username)
+            greeting = time_greeting(first_name)
+            badge = _account_badge(existing_user)
+            remaining = _get_daily_remaining(existing_user)
 
             text = (
-                f"✦ {greeting}\n\n"
-                f"Welcome back to Sidicoin!\n\n"
+                f"{STAR} <b>{greeting}</b>\n\n"
+                f"Welcome back to Sidicoin.\n\n"
                 f"{DIVIDER}\n"
-                f"💎 Balance: <b>{fmt_number(balance)} SIDI</b>\n"
-                f"💵 Value: {fmt_naira(naira)}\n"
-                f"🏆 Account: {_account_badge(existing_user)}\n"
+                f"  <b>Your Wallet</b>\n\n"
+                f"  \U0001f48e  <b>{fmt_number(balance)} SIDI</b>\n"
+                f"  \U0001f4b5  {fmt_naira(naira)}\n"
+                f"  \U0001f3c6  {badge} Account\n"
+                f"  \U0001f4ca  {fmt_number(remaining)} SIDI daily limit left\n"
                 f"{DIVIDER}\n\n"
-                f"What would you like to do? ✦"
+                f"What would you like to do? {STAR}"
             )
             await message.answer(text, reply_markup=home_keyboard())
             return
 
-        # New user — show loading
-        loading_msg = await message.answer("⚡ Setting up your Sidicoin wallet...")
+        # -- New user --
+        loading_msg = await message.answer(
+            f"\u26a1 Setting up your Sidicoin wallet..."
+        )
 
         # Create TON wallet
         wallet_address, encrypted_key = create_wallet()
@@ -147,41 +164,61 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             telegram_id=user_id,
             username=username,
             full_name=full_name,
-            photo_url=photo_url,
+            photo_url="",
             wallet_address=wallet_address,
             encrypted_private_key=encrypted_key,
             referred_by=referred_by,
         )
 
         # Credit referrer if applicable
+        referrer_name_display = ""
         if referred_by:
             try:
                 referrer_id = int(referred_by)
                 if user_exists(referrer_id):
                     credit_referrer(referrer_id, 50.0, "signup")
-                    # Notify referrer
                     referrer = get_user(referrer_id)
                     if referrer:
-                        referrer_name = referrer.get("full_name", "there")
+                        referrer_name_display = referrer.get("full_name", "")
                         await notify_user(
                             bot, referrer_id,
-                            f"🎉 {referrer_name}, someone joined via your referral link!\n"
-                            f"+<b>50 SIDI</b> ({fmt_naira(sidi_to_naira(50))}) added to your wallet ✦"
+                            f"{STAR} <b>Referral Bonus!</b>\n\n"
+                            f"<b>{_safe_escape(first_name)}</b> just joined Sidicoin "
+                            f"through your referral link.\n\n"
+                            f"+<b>50 SIDI</b> ({fmt_naira(sidi_to_naira(50))}) "
+                            f"added to your wallet.\n\n"
+                            f"Keep sharing, keep earning {STAR}"
                         )
             except (ValueError, Exception) as e:
                 logger.error(f"Referral credit error: {e}")
 
-        # Edit loading message with welcome
+        # Build beautiful welcome message
+        referral_line = ""
+        if referred_by and referrer_name_display:
+            referral_line = (
+                f"\n\U0001f91d You joined through <b>{_safe_escape(referrer_name_display)}</b>'s "
+                f"referral. You both earned bonus SIDI!\n"
+            )
+        elif referred_by:
+            referral_line = (
+                f"\n\U0001f91d You joined through a referral link. "
+                f"You both earned bonus SIDI!\n"
+            )
+
         welcome_text = (
-            f"✦ Welcome to Sidicoin, {full_name or username}\n\n"
-            f"Your wallet is ready. Your money moves instantly across Africa.\n\n"
+            f"{STAR} <b>Welcome to Sidicoin, {_safe_escape(first_name)}</b>\n\n"
+            f"Your wallet is ready.\n"
+            f"Your money moves instantly across Africa.\n"
+            f"{referral_line}\n"
             f"{DIVIDER}\n"
-            f"💎 Balance: <b>80 SIDI</b>\n"
-            f"💵 Value: {fmt_naira(2000)} (Welcome Bonus)\n"
+            f"  <b>Your Welcome Gift</b>\n\n"
+            f"  \U0001f48e  <b>80 SIDI</b>\n"
+            f"  \U0001f4b5  {fmt_naira(2000)}\n"
+            f"  \u2705  Ready to send, spend or save\n"
             f"{DIVIDER}\n\n"
-            f"Sidicoin lets you send money to anyone in Africa "
-            f"using just their Telegram username — instantly, for free.\n\n"
-            f"Type /help to see everything you can do ✦"
+            f"Sidicoin lets you send money to anyone in Africa using "
+            f"just their Telegram @username \u2014 instantly, for free.\n\n"
+            f"Type /help to see everything you can do {STAR}"
         )
 
         try:
@@ -191,24 +228,27 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 
         # Send onboarding step 1
         onboard_text = (
-            f"✦ <b>Let's get you started</b>\n\n"
-            f"Sidicoin is the easiest way to move money across Africa.\n"
-            f"No bank transfers. No long account numbers.\n"
-            f"Just a Telegram username."
+            f"{STAR} <b>Let's get you started</b>\n\n"
+            f"Sidicoin is the easiest way to move\n"
+            f"money across Africa.\n\n"
+            f"\u2022 No bank transfers\n"
+            f"\u2022 No long account numbers\n"
+            f"\u2022 No hidden fees\n\n"
+            f"Just a Telegram @username and you're done."
         )
         await message.answer(onboard_text, reply_markup=onboarding_step1_keyboard())
 
     except Exception as e:
         logger.error(f"/start error: {e}", exc_info=True)
         await message.answer(
-            "Something went wrong on our end. Please try again in a moment ✦",
+            f"Something went wrong on our end. Please try again in a moment {STAR}",
             reply_markup=home_button_keyboard(),
         )
 
 
-# ═══════════════════════════════════════════════════════════════
-# /balance
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /balance
+# =====================================================================
 
 @router.message(Command("balance", "wallet"))
 async def cmd_balance(message: Message):
@@ -216,37 +256,42 @@ async def cmd_balance(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"You don't have a wallet yet. Type /start to create one {STAR}")
             return
 
-        loading = await message.answer("📊 Fetching your wallet...")
+        loading = await message.answer("\U0001f4ca Fetching your wallet...")
         await _show_balance(loading, user)
     except Exception as e:
         logger.error(f"/balance error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
 async def _show_balance(msg: Message, user: dict):
-    """Edit message with balance details."""
+    """Edit message with beautifully formatted balance details."""
     balance = float(user.get("sidi_balance", 0))
     naira = sidi_to_naira(balance)
     username = user.get("username", "")
+    full_name = user.get("full_name", "")
     total_sent = float(user.get("total_sent", 0))
     total_received = float(user.get("total_received", 0))
     remaining = _get_daily_remaining(user)
     badge = _account_badge(user)
+    is_prem = check_premium_status(user)
+    limit = PREMIUM_DAILY_LIMIT if is_prem else FREE_DAILY_LIMIT
+    used = float(limit) - remaining
 
     text = (
-        f"✦ Your Sidicoin Wallet\n\n"
-        f"👤 @{username}\n"
-        f"{DIVIDER}\n"
-        f"💎 SIDI: <b>{fmt_number(balance)} SIDI</b>\n"
-        f"💵 Value: {fmt_naira(naira)}\n"
-        f"{DIVIDER}\n"
-        f"📤 Total Sent: {fmt_number(total_sent)} SIDI\n"
-        f"📥 Total Received: {fmt_number(total_received)} SIDI\n"
-        f"🏆 Account: {badge}\n"
-        f"📊 Daily Limit: {fmt_number(remaining)} SIDI left\n"
+        f"{STAR} <b>{_safe_escape(full_name)}'s Wallet</b>\n"
+        f"@{username}\n\n"
+        f"{DIVIDER}\n\n"
+        f"  \U0001f48e <b>{fmt_number(balance)} SIDI</b>\n"
+        f"  \U0001f4b5 {fmt_naira(naira)}\n\n"
+        f"{THIN_DIVIDER}\n\n"
+        f"  \U0001f4e4 Sent       {fmt_number(total_sent)} SIDI\n"
+        f"  \U0001f4e5 Received   {fmt_number(total_received)} SIDI\n"
+        f"  \U0001f3c6 Account    {badge}\n"
+        f"  \U0001f4ca Daily      {progress_bar(used, float(limit))}  "
+        f"{fmt_number(remaining)} left\n\n"
         f"{DIVIDER}"
     )
     try:
@@ -255,23 +300,23 @@ async def _show_balance(msg: Message, user: dict):
         pass
 
 
-# ═══════════════════════════════════════════════════════════════
-# /send
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /send
+# =====================================================================
 
 @router.message(Command("send"))
 async def cmd_send(message: Message, bot: Bot):
-    """Handle /send — direct or guided flow."""
+    """Handle /send -- direct or guided flow."""
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         text = message.text.strip()
         parts = text.split()
 
-        # METHOD 1: Direct — /send @username 500
+        # METHOD 1: Direct /send @username 500
         if len(parts) >= 3:
             recipient_username = parts[1]
             amount_text = " ".join(parts[2:])
@@ -280,18 +325,18 @@ async def cmd_send(message: Message, bot: Bot):
                 await _process_send_flow(message, bot, user, recipient_username, amount)
                 return
 
-        # METHOD 2: Guided flow — ask for recipient
+        # METHOD 2: Guided flow
         await message.answer(
-            "✦ <b>Send SIDI</b>\n\n"
-            "Who would you like to send to?\n"
-            "Enter their Telegram @username:",
+            f"{STAR} <b>Send SIDI</b>\n\n"
+            f"Who would you like to send to?\n\n"
+            f"Enter their Telegram @username:",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "send_username")
 
     except Exception as e:
         logger.error(f"/send error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
 async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient_username: str, amount: float):
@@ -302,7 +347,6 @@ async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient
     # Check recipient exists
     recipient = find_user_by_username(clean_user)
     if not recipient:
-        # Check for similar usernames
         all_ids = get_all_user_ids()
         all_users = []
         for uid in all_ids[:200]:
@@ -315,27 +359,28 @@ async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient
 
         suggest_text = ""
         if similar:
-            suggest_text = "\n\nDid you mean: " + ", ".join(f"@{s}" for s in similar)
+            suggest_text = "\n\nDid you mean: " + ", ".join(f"@{s}" for s in similar[:3])
 
         invite_link = f"https://t.me/{bot_username}?start=ref_{sender_id}"
         await message.answer(
             f"@{clean_user} hasn't joined Sidicoin yet.{suggest_text}\n\n"
-            f"Invite them to join:\n{invite_link} ✦",
+            f"Invite them:\n<code>{invite_link}</code> {STAR}",
             reply_markup=home_button_keyboard(),
         )
         return
 
     if str(recipient["telegram_id"]) == str(sender_id):
-        await message.answer("You can't send SIDI to yourself ✦", reply_markup=home_button_keyboard())
+        await message.answer(f"You can't send SIDI to yourself {STAR}", reply_markup=home_button_keyboard())
         return
 
     # Check balance
     balance = float(sender.get("sidi_balance", 0))
     if balance < amount:
         await message.answer(
-            f"Insufficient balance. You have <b>{fmt_number(balance)} SIDI</b> "
+            f"Insufficient balance.\n\n"
+            f"You have <b>{fmt_number(balance)} SIDI</b> "
             f"but tried to send <b>{fmt_number(amount)} SIDI</b>.\n\n"
-            f"Type /buy to top up ✦",
+            f"Top up with /buy {STAR}",
             reply_markup=home_button_keyboard(),
         )
         return
@@ -348,21 +393,23 @@ async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient
     if not within_limit:
         limit = PREMIUM_DAILY_LIMIT if is_premium else FREE_DAILY_LIMIT
         await message.answer(
-            f"Daily transfer limit reached.\n"
-            f"Limit: {fmt_number(limit)} SIDI | Remaining: {fmt_number(remaining)} SIDI\n\n"
-            f"{'Upgrade to Premium for 500K/day limit: /premium' if not is_premium else 'Try again tomorrow'} ✦",
+            f"Daily transfer limit reached.\n\n"
+            f"Limit: {fmt_number(limit)} SIDI\n"
+            f"Remaining: {fmt_number(remaining)} SIDI\n\n"
+            f"{'Upgrade to Premium for 500K/day: /premium' if not is_premium else 'Try again tomorrow'} {STAR}",
             reply_markup=home_button_keyboard(),
         )
         return
 
     naira = sidi_to_naira(amount)
-    recipient_name = recipient.get("full_name", recipient.get("username", ""))
+    r_name = recipient.get("full_name", recipient.get("username", ""))
+    r_uname = recipient.get("username", clean_user)
 
     # Store pending send data
     set_pending_action(int(sender_id), "send_confirm", {
         "recipient_id": recipient["telegram_id"],
-        "recipient_username": recipient.get("username", clean_user),
-        "recipient_name": recipient_name,
+        "recipient_username": r_uname,
+        "recipient_name": r_name,
         "amount": amount,
     })
 
@@ -370,25 +417,28 @@ async def _process_send_flow(message: Message, bot: Bot, sender: dict, recipient
     keyboard = send_confirm_keyboard()
     warning = ""
     if is_large_transfer(amount):
-        warning = "\n⚠️ <b>Large transfer warning</b> — please double-check the details.\n"
+        warning = f"\n\u26a0\ufe0f <b>Large transfer</b> \u2014 double-check the details.\n"
         keyboard = send_large_confirm_keyboard()
 
     confirm_text = (
-        f"✦ <b>Transfer Summary</b>\n\n"
-        f"To: @{recipient.get('username', clean_user)} — {recipient_name}\n"
-        f"Amount: <b>{fmt_number(amount)} SIDI</b>\n"
-        f"Value: {fmt_naira(naira)}\n"
-        f"Fee: Free ✅\n"
-        f"Speed: Instant ⚡\n"
+        f"{STAR} <b>Transfer Summary</b>\n\n"
+        f"{DIVIDER}\n\n"
+        f"  To       @{r_uname}\n"
+        f"  Name     {_safe_escape(r_name)}\n"
+        f"  Amount   <b>{fmt_number(amount)} SIDI</b>\n"
+        f"  Value    {fmt_naira(naira)}\n"
+        f"  Fee      Free \u2705\n"
+        f"  Speed    Instant \u26a1\n\n"
+        f"{DIVIDER}"
         f"{warning}\n"
-        f"Confirm transfer?"
+        f"Confirm this transfer?"
     )
     await message.answer(confirm_text, reply_markup=keyboard)
 
 
-# ═════════════════════════════════��═════════════════════════════
-# /buy
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /buy
+# =====================================================================
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message):
@@ -396,29 +446,33 @@ async def cmd_buy(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
+        is_prem = check_premium_status(user)
+        fee_label = "0.8%" if is_prem else "1.5%"
+
         await message.answer(
-            "✦ <b>Buy SIDI</b>\n\n"
-            "How much would you like to buy?\n\n"
-            "Enter amount in SIDI or Naira:\n"
-            "• <code>500</code> (500 SIDI)\n"
-            "• <code>₦12500</code> (₦12,500 worth)\n"
-            "• <code>1000 SIDI</code>\n"
-            "• <code>5000 NGN</code>",
+            f"{STAR} <b>Buy SIDI</b>\n\n"
+            f"How much would you like to buy?\n\n"
+            f"Enter amount in SIDI or Naira:\n\n"
+            f"  <code>500</code>        \u2192 500 SIDI\n"
+            f"  <code>2000 SIDI</code>  \u2192 2,000 SIDI\n"
+            f"  <code>5000 NGN</code>   \u2192 {fmt_naira(5000)} worth\n"
+            f"  <code>5k</code>         \u2192 5,000 SIDI\n\n"
+            f"Fee: {fee_label}",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "buy_amount")
 
     except Exception as e:
         logger.error(f"/buy error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /sell
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /sell
+# =====================================================================
 
 @router.message(Command("sell", "cashout"))
 async def cmd_sell(message: Message):
@@ -426,34 +480,38 @@ async def cmd_sell(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         balance = float(user.get("sidi_balance", 0))
         if balance <= 0:
             await message.answer(
                 f"You don't have any SIDI to cash out.\n"
-                f"Type /buy to purchase some ✦",
+                f"Buy some first with /buy {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             return
 
+        is_prem = check_premium_status(user)
+        fee_label = "0.8%" if is_prem else "1.5%"
+
         await message.answer(
-            f"✦ <b>Cash Out SIDI</b>\n\n"
-            f"Your balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
-            f"How much SIDI would you like to cash out?",
+            f"{STAR} <b>Cash Out SIDI</b>\n\n"
+            f"Balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
+            f"How much SIDI would you like to cash out?\n"
+            f"Fee: {fee_label}",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(message.from_user.id, "sell_amount")
 
     except Exception as e:
         logger.error(f"/sell error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /history
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /history
+# =====================================================================
 
 @router.message(Command("history"))
 async def cmd_history(message: Message):
@@ -461,18 +519,16 @@ async def cmd_history(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
-
         await _show_history(message, user, "all")
-
     except Exception as e:
         logger.error(f"/history error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
 async def _show_history(target, user: dict, tx_filter: str):
-    """Display transaction history with filter."""
+    """Display beautifully formatted transaction history with filter."""
     txns = user.get("transactions", [])
     if not isinstance(txns, list):
         txns = []
@@ -485,7 +541,11 @@ async def _show_history(target, user: dict, tx_filter: str):
         txns = [t for t in txns if t.get("type") in ("buy", "sell")]
 
     if not txns:
-        text = "✦ <b>Transaction History</b>\n\nNo transactions yet. Start with /send or /buy ✦"
+        text = (
+            f"{STAR} <b>Transaction History</b>\n\n"
+            f"No transactions yet.\n"
+            f"Start with /send or /buy {STAR}"
+        )
         if isinstance(target, Message):
             await target.answer(text, reply_markup=history_filter_keyboard())
         elif isinstance(target, CallbackQuery):
@@ -495,38 +555,55 @@ async def _show_history(target, user: dict, tx_filter: str):
                 pass
         return
 
-    lines = ["✦ <b>Transaction History</b>\n", DIVIDER]
+    filter_label = {"all": "All", "sent": "Sent", "received": "Received", "buysell": "Buy/Sell"}.get(tx_filter, "All")
+    lines = [f"{STAR} <b>Transaction History</b>  \u2022  {filter_label}\n", DIVIDER]
+
+    # Type icons for beautiful display
+    type_icons = {
+        "send": "\U0001f4e4",
+        "receive": "\U0001f4e5",
+        "buy": "\U0001f4b3",
+        "sell": "\U0001f4b0",
+        "bonus": "\U0001f381",
+        "checkin": "\u2705",
+        "referral_bonus": "\U0001f91d",
+        "premium": "\u2b50",
+        "debit": "\u26a0\ufe0f",
+    }
+
     for tx in txns[:20]:
         tx_type = tx.get("type", "")
         amount = float(tx.get("amount", 0))
         ts = tx.get("timestamp", 0)
-        time_str = fmt_timestamp(ts) if ts else ""
-        desc = tx.get("description", "")
+        time_str = fmt_relative_time(ts) if ts else ""
         other = tx.get("other_username", "")
+        icon = type_icons.get(tx_type, "\u2022")
 
         if tx_type == "send":
-            lines.append(f"📤 Sent <b>{fmt_number(amount)} SIDI</b> to @{other}")
-            lines.append(f"   {fmt_naira(sidi_to_naira(amount))} · Instant · {time_str}")
+            lines.append(f"{icon} Sent <b>{fmt_number(amount)} SIDI</b> to @{other}")
+            lines.append(f"     {fmt_naira(sidi_to_naira(amount))} \u2022 {time_str}")
         elif tx_type == "receive":
-            lines.append(f"📥 Received <b>{fmt_number(amount)} SIDI</b> from @{other}")
-            lines.append(f"   {fmt_naira(sidi_to_naira(amount))} · Instant · {time_str}")
+            lines.append(f"{icon} Received <b>{fmt_number(amount)} SIDI</b> from @{other}")
+            lines.append(f"     {fmt_naira(sidi_to_naira(amount))} \u2022 {time_str}")
         elif tx_type == "buy":
-            lines.append(f"💳 Bought <b>{fmt_number(amount)} SIDI</b> — Paid {fmt_naira(sidi_to_naira(amount))}")
-            lines.append(f"   {time_str}")
+            lines.append(f"{icon} Bought <b>{fmt_number(amount)} SIDI</b>")
+            lines.append(f"     {fmt_naira(sidi_to_naira(amount))} \u2022 {time_str}")
         elif tx_type == "sell":
-            lines.append(f"💰 Cashed out {fmt_naira(sidi_to_naira(amount))}")
-            lines.append(f"   {desc} · {time_str}")
-        elif tx_type == "bonus":
-            lines.append(f"🎁 {desc}: +<b>{fmt_number(amount)} SIDI</b>")
-            lines.append(f"   {time_str}")
-        elif tx_type == "checkin":
-            lines.append(f"✅ {desc}: +<b>{fmt_number(amount)} SIDI</b>")
-            lines.append(f"   {time_str}")
-        elif tx_type == "referral_bonus":
-            lines.append(f"🎁 {desc}: +<b>{fmt_number(amount)} SIDI</b>")
-            lines.append(f"   {time_str}")
+            desc = tx.get("description", "")
+            lines.append(f"{icon} Cashed out <b>{fmt_number(amount)} SIDI</b>")
+            lines.append(f"     {desc} \u2022 {time_str}")
+        elif tx_type in ("bonus", "referral_bonus", "checkin"):
+            desc = tx.get("description", tx_type.title())
+            lines.append(f"{icon} {desc}: +<b>{fmt_number(amount)} SIDI</b>")
+            lines.append(f"     {time_str}")
+        elif tx_type == "premium":
+            lines.append(f"{icon} Premium activated")
+            lines.append(f"     {time_str}")
         else:
-            lines.append(f"• {desc}: {fmt_number(amount)} SIDI · {time_str}")
+            desc = tx.get("description", "Transaction")
+            lines.append(f"{icon} {desc}: {fmt_number(amount)} SIDI \u2022 {time_str}")
+
+        lines.append("")  # spacer between entries
 
     lines.append(DIVIDER)
     text = "\n".join(lines)
@@ -540,9 +617,9 @@ async def _show_history(target, user: dict, tx_filter: str):
             pass
 
 
-# ═══════════════════════════════════════════════════════════════
-# /contacts
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /contacts
+# =====================================================================
 
 @router.message(Command("contacts"))
 async def cmd_contacts(message: Message):
@@ -550,39 +627,43 @@ async def cmd_contacts(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         contacts = user.get("saved_contacts", [])
         if not contacts:
             await message.answer(
-                "✦ <b>Saved Contacts</b>\n\n"
-                "No saved contacts yet. Send SIDI to someone and they'll appear here ✦",
+                f"{STAR} <b>Saved Contacts</b>\n\n"
+                f"No saved contacts yet.\n"
+                f"Send SIDI to someone and they'll appear here {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             return
 
-        lines = ["✦ <b>Saved Contacts</b>\n", DIVIDER]
-        for c in contacts[:10]:
+        lines = [f"{STAR} <b>Saved Contacts</b>\n", DIVIDER, ""]
+        for i, c in enumerate(contacts[:10], 1):
             name = c.get("full_name", "")
             uname = c.get("username", "")
             last = c.get("last_transfer", 0)
-            lines.append(f"👤 {name} (@{uname})")
-            if last:
-                lines.append(f"   Last transfer: {fmt_timestamp(last)}")
+            time_str = fmt_relative_time(last) if last else ""
+            lines.append(f"  {i}. <b>{_safe_escape(name)}</b> (@{uname})")
+            if time_str:
+                lines.append(f"      Last: {time_str}")
+            lines.append("")
 
         lines.append(DIVIDER)
+        lines.append(f"\nTap a contact to send SIDI instantly {STAR}")
         text = "\n".join(lines)
         await message.answer(text, reply_markup=contacts_keyboard(contacts))
 
     except Exception as e:
         logger.error(f"/contacts error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /refer
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /refer
+# =====================================================================
 
 @router.message(Command("refer", "referral"))
 async def cmd_refer(message: Message, bot: Bot):
@@ -590,7 +671,7 @@ async def cmd_refer(message: Message, bot: Bot):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         bot_username = await _get_bot_username(bot)
@@ -599,26 +680,29 @@ async def cmd_refer(message: Message, bot: Bot):
         earned = float(user.get("referral_earnings", 0))
 
         text = (
-            f"✦ <b>Refer and Earn</b>\n\n"
-            f"Your referral link:\n<code>{ref_link}</code>\n\n"
-            f"{DIVIDER}\n"
-            f"🎁 Per signup: +50 SIDI ({fmt_naira(sidi_to_naira(50))})\n"
-            f"💰 Per purchase: +10 SIDI ({fmt_naira(sidi_to_naira(10))})\n"
-            f"{DIVIDER}\n"
-            f"👥 Referrals: <b>{count}</b>\n"
-            f"💎 Earned: <b>{fmt_number(earned)} SIDI</b> ({fmt_naira(sidi_to_naira(earned))})\n"
+            f"{STAR} <b>Refer & Earn</b>\n\n"
+            f"Your link:\n<code>{ref_link}</code>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>Rewards</b>\n\n"
+            f"  \U0001f91d Per signup    +<b>50 SIDI</b> ({fmt_naira(sidi_to_naira(50))})\n"
+            f"  \U0001f4b3 Per purchase  +<b>10 SIDI</b> ({fmt_naira(sidi_to_naira(10))})\n"
+            f"  \u267e\ufe0f  Forever       Earn on every purchase they make\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  <b>Your Stats</b>\n\n"
+            f"  \U0001f465 Referrals    <b>{count}</b>\n"
+            f"  \U0001f48e Earned       <b>{fmt_number(earned)} SIDI</b> ({fmt_naira(sidi_to_naira(earned))})\n\n"
             f"{DIVIDER}"
         )
         await message.answer(text, reply_markup=refer_keyboard(ref_link))
 
     except Exception as e:
         logger.error(f"/refer error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /checkin
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /checkin
+# =====================================================================
 
 @router.message(Command("checkin"))
 async def cmd_checkin(message: Message):
@@ -626,7 +710,7 @@ async def cmd_checkin(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         success, bonus_msg, amount, streak = process_checkin(message.from_user.id)
@@ -635,27 +719,27 @@ async def cmd_checkin(message: Message):
             await message.answer(bonus_msg, reply_markup=home_button_keyboard())
             return
 
-        # Refresh user data
         user = get_user(message.from_user.id)
         balance = float(user.get("sidi_balance", 0))
+        fires = streak_fire(streak)
 
         text = (
-            f"✦ <b>Daily Reward Claimed!</b>\n\n"
-            f"+<b>{fmt_number(amount)} SIDI</b> added to your wallet\n"
-            f"🔥 Streak: {streak} days\n"
-            f"New Balance: <b>{fmt_number(balance)} SIDI</b>"
+            f"{STAR} <b>Daily Reward Claimed!</b>\n\n"
+            f"+<b>{fmt_number(amount)} SIDI</b> added to your wallet\n\n"
+            f"  {fires}  Streak: <b>{streak} days</b>\n"
+            f"  \U0001f48e  Balance: <b>{fmt_number(balance)} SIDI</b>\n"
             f"{bonus_msg}"
         )
         await message.answer(text, reply_markup=home_keyboard())
 
     except Exception as e:
         logger.error(f"/checkin error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /premium
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /premium
+# =====================================================================
 
 @router.message(Command("premium"))
 async def cmd_premium(message: Message):
@@ -663,40 +747,42 @@ async def cmd_premium(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         if check_premium_status(user):
             expiry = int(user.get("premium_expiry", 0))
             await message.answer(
-                f"✦ You are already a <b>Premium ✦</b> member!\n\n"
+                f"{STAR} <b>You're Premium {STAR}</b>\n\n"
                 f"Expires: {fmt_timestamp(expiry)}\n\n"
-                f"Enjoy your benefits ✦",
+                f"Enjoy lower fees and higher limits {STAR}",
                 reply_markup=home_keyboard(),
             )
             return
 
         text = (
-            f"✦ <b>Sidicoin Premium</b>\n\n"
-            f"<b>FREE</b>          <b>PREMIUM ✦</b>\n"
-            f"{DIVIDER}\n"
-            f"50K/day       500K/day limit\n"
-            f"1.5% fees     0.8% fees\n"
-            f"10 SIDI/day   25 SIDI/day check-in\n"
-            f"No badge      ✦ badge\n"
-            f"No priority   Priority support\n\n"
-            f"<b>₦1,500 per month</b>"
+            f"{STAR} <b>Sidicoin Premium</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
+            f"  Daily Limit       50K      <b>500K</b>\n"
+            f"  Buy/Sell Fee      1.5%     <b>0.8%</b>\n"
+            f"  Daily Check-in    10       <b>25 SIDI</b>\n"
+            f"  Badge             \u2014        <b>{STAR}</b>\n"
+            f"  Priority Support  \u2014        <b>\u2705</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>{fmt_naira(1500)} per month</b>\n"
+            f"  That's just {fmt_naira(50)}/day for 10x the limits"
         )
         await message.answer(text, reply_markup=premium_keyboard())
 
     except Exception as e:
         logger.error(f"/premium error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /leaderboard
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /leaderboard
+# =====================================================================
 
 @router.message(Command("leaderboard", "top"))
 async def cmd_leaderboard(message: Message):
@@ -704,77 +790,94 @@ async def cmd_leaderboard(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
-        leaders = get_leaderboard(5)
-        rank = get_user_rank(message.from_user.id)
-        balance = float(user.get("sidi_balance", 0))
-
-        medals = ["🥇", "🥈", "🥉", "4.", "5."]
-        lines = ["✦ <b>Top Sidicoin Holders</b>\n"]
-
-        for i, (uid, score) in enumerate(leaders):
-            leader_user = get_user(uid)
-            uname = leader_user.get("username", uid) if leader_user else uid
-            medal = medals[i] if i < len(medals) else f"{i+1}."
-            lines.append(f"{medal} @{uname} — <b>{fmt_number(score)} SIDI</b>")
-
-        lines.append(f"\nYour Rank: <b>#{rank}</b>")
-        lines.append(f"Your Balance: <b>{fmt_number(balance)} SIDI</b> ✦")
-
-        text = "\n".join(lines)
-        await message.answer(text, reply_markup=leaderboard_keyboard())
+        await _show_leaderboard(message, user)
 
     except Exception as e:
         logger.error(f"/leaderboard error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /price
-# ═══════════════════════════════════════════════════════════════
+async def _show_leaderboard(target, user: dict, is_edit: bool = False):
+    """Display leaderboard."""
+    leaders = get_leaderboard(5)
+    rank = get_user_rank(user["telegram_id"])
+    balance = float(user.get("sidi_balance", 0))
+
+    medals = ["\U0001f947", "\U0001f948", "\U0001f949", "4.", "5."]
+    lines = [f"{STAR} <b>Top Sidicoin Holders</b>\n", DIVIDER, ""]
+
+    for i, (uid, score) in enumerate(leaders):
+        leader_user = get_user(uid)
+        uname = leader_user.get("username", uid) if leader_user else uid
+        medal = medals[i] if i < len(medals) else f"{i + 1}."
+        prem = check_premium_status(leader_user) if leader_user else False
+        badge = f" {STAR}" if prem else ""
+        lines.append(f"  {medal} @{uname}{badge} \u2014 <b>{fmt_number(score)} SIDI</b>")
+
+    lines.append("")
+    lines.append(DIVIDER)
+    lines.append(f"\n  Your Rank: <b>#{rank}</b>")
+    lines.append(f"  Your Balance: <b>{fmt_number(balance)} SIDI</b> {STAR}")
+
+    text = "\n".join(lines)
+    if is_edit and isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(text, reply_markup=leaderboard_keyboard())
+        except TelegramBadRequest:
+            pass
+    elif isinstance(target, Message):
+        await target.answer(text, reply_markup=leaderboard_keyboard())
+
+
+# =====================================================================
+#  /price
+# =====================================================================
 
 @router.message(Command("price"))
 async def cmd_price(message: Message):
     """Show current SIDI price and market data."""
     try:
-        loading = await message.answer("📈 Fetching live data...")
+        loading = await message.answer("\U0001f4c8 Fetching live data...")
 
         stats = get_all_stats()
         holders = int(stats.get("total_holders", 0))
         volume = float(stats.get("daily_volume_ngn", 0))
         tx_count = int(stats.get("daily_tx_count", 0))
         cap = SIDI_PRICE_NGN * 10_000_000_000
-        usd_rate = 1600  # approximate NGN/USD
+        usd_rate = 1600
         usd_equiv = SIDI_PRICE_NGN / usd_rate
 
         text = (
-            f"✦ <b>Sidicoin Price</b>\n\n"
-            f"1 SIDI = <b>₦{fmt_number(SIDI_PRICE_NGN)}</b>\n"
-            f"1 SIDI = <b>${usd_equiv:.6f}</b>\n\n"
+            f"{STAR} <b>Sidicoin Price</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  1 SIDI = <b>{fmt_naira(SIDI_PRICE_NGN)}</b>\n"
+            f"  1 SIDI = <b>${usd_equiv:.6f}</b>\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  Holders          {fmt_number(holders)}\n"
+            f"  Market Cap       {fmt_naira(cap)}\n"
+            f"  Volume Today     {fmt_naira(volume)}\n"
+            f"  Tx Today         {fmt_number(tx_count)}\n"
+            f"  Blockchain       TON\n\n"
             f"{DIVIDER}\n"
-            f"Holders: {fmt_number(holders)}\n"
-            f"Market Cap: {fmt_naira(cap)}\n"
-            f"Volume Today: {fmt_naira(volume)}\n"
-            f"Transactions Today: {fmt_number(tx_count)}\n"
-            f"{DIVIDER}\n"
-            f"Blockchain: TON ✦"
+            f"  {BRAND} {STAR}"
         )
 
         try:
-            await loading.edit_text(text, reply_markup=home_button_keyboard())
+            await loading.edit_text(text, reply_markup=home_button_keyboard(), disable_web_page_preview=True)
         except TelegramBadRequest:
-            await message.answer(text, reply_markup=home_button_keyboard())
+            await message.answer(text, reply_markup=home_button_keyboard(), disable_web_page_preview=True)
 
     except Exception as e:
         logger.error(f"/price error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /stats
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /stats
+# =====================================================================
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -786,27 +889,30 @@ async def cmd_stats(message: Message):
         volume = float(stats.get("daily_volume_ngn", 0))
         tx_count = int(stats.get("daily_tx_count", 0))
         fees = float(stats.get("total_fees_sidi", 0))
+        supply_pct = (circulating / 10_000_000_000) * 100
 
         text = (
-            f"✦ <b>Sidicoin Statistics</b>\n\n"
-            f"Total Supply: <b>10,000,000,000 SIDI</b>\n"
-            f"Circulating: {fmt_number(circulating)} SIDI\n"
-            f"Holders: {fmt_number(holders)}\n"
-            f"Transactions Today: {fmt_number(tx_count)}\n"
-            f"Volume Today: {fmt_naira(volume)}\n"
-            f"Total Fees Collected: {fmt_naira(sidi_to_naira(fees))}\n\n"
-            f"Blockchain: TON | Ticker: SIDI | Price: ₦{fmt_number(SIDI_PRICE_NGN)} per SIDI ✦"
+            f"{STAR} <b>Sidicoin Network Stats</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Total Supply     10,000,000,000 SIDI\n"
+            f"  Circulating      {fmt_number(circulating)} SIDI ({supply_pct:.4f}%)\n"
+            f"  Holders          {fmt_number(holders)}\n"
+            f"  Tx Today         {fmt_number(tx_count)}\n"
+            f"  Volume Today     {fmt_naira(volume)}\n"
+            f"  Fees Collected   {fmt_naira(sidi_to_naira(fees))}\n\n"
+            f"  Blockchain: TON  |  Ticker: SIDI  |  {fmt_naira(SIDI_PRICE_NGN)}/SIDI\n\n"
+            f"{DIVIDER}"
         )
         await message.answer(text, reply_markup=home_button_keyboard())
 
     except Exception as e:
         logger.error(f"/stats error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /settings
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /settings
+# =====================================================================
 
 @router.message(Command("settings"))
 async def cmd_settings(message: Message):
@@ -814,91 +920,154 @@ async def cmd_settings(message: Message):
     try:
         user = get_user(message.from_user.id)
         if not user:
-            await message.answer("You don't have a wallet yet. Type /start to create one ✦")
+            await message.answer(f"Type /start to create your wallet first {STAR}")
             return
 
         joined = fmt_date(user.get("joined_date", 0))
-        bank = user.get("bank_name", "Not set")
+        bank = user.get("bank_name", "")
         account = user.get("bank_account", "")
         account_name = user.get("bank_account_name", "")
-        bank_display = f"{bank} — {account} — {account_name}" if bank != "Not set" and account else "Not set"
+        bank_display = f"{bank} \u2014 {account} \u2014 {account_name}" if bank and account else "Not set"
+        wallet = user.get("wallet_address", "")[:20] + "..." if user.get("wallet_address") else "N/A"
 
         text = (
-            f"✦ <b>Account Settings</b>\n\n"
-            f"👤 {user.get('full_name', '')} (@{user.get('username', '')})\n"
-            f"🏆 {_account_badge(user)} Account\n"
-            f"📅 Member since {joined}\n"
-            f"🏦 Saved Bank: {bank_display}"
+            f"{STAR} <b>Account Settings</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f464 {_safe_escape(user.get('full_name', ''))} (@{user.get('username', '')})\n"
+            f"  \U0001f3c6 {_account_badge(user)} Account\n"
+            f"  \U0001f4c5 Member since {joined}\n"
+            f"  \U0001f3e6 Bank: {bank_display}\n"
+            f"  \U0001f4ce TON Wallet: <code>{wallet}</code>\n\n"
+            f"{DIVIDER}"
         )
         await message.answer(text, reply_markup=settings_keyboard())
 
     except Exception as e:
         logger.error(f"/settings error: {e}", exc_info=True)
-        await message.answer("Something went wrong on our end. Please try again in a moment ✦")
+        await message.answer(f"Something went wrong. Please try again {STAR}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# /help
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /help
+# =====================================================================
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     """Show all commands organized by category."""
     text = (
-        f"✦ <b>Sidicoin Commands</b>\n\n"
-        f"<b>💎 Wallet</b>\n"
-        f"/balance — Check your SIDI balance\n"
-        f"/settings — Account settings\n\n"
-        f"<b>📤 Transfers</b>\n"
-        f"/send — Send SIDI to anyone\n"
-        f"/contacts — Quick send to saved contacts\n\n"
-        f"<b>💰 Money</b>\n"
-        f"/buy — Buy SIDI with Naira\n"
-        f"/sell — Cash out SIDI to bank\n"
-        f"/history — Transaction history\n\n"
-        f"<b>🎁 Earn</b>\n"
-        f"/checkin — Daily reward\n"
-        f"/refer — Earn 50 SIDI per referral\n"
-        f"/premium — Upgrade for lower fees\n\n"
-        f"<b>📊 Market</b>\n"
-        f"/price — SIDI price and market data\n"
-        f"/stats — Platform statistics\n"
-        f"/leaderboard — Top holders\n\n"
-        f"<b>ℹ️ Info</b>\n"
-        f"/about — About Sidicoin\n"
-        f"/help — This menu\n\n"
-        f'🌐 <a href="https://coin.sidihost.sbs">coin.sidihost.sbs</a> ✦'
+        f"{STAR} <b>Sidicoin Commands</b>\n\n"
+        f"{DIVIDER}\n\n"
+        f"  <b>\U0001f48e Wallet</b>\n"
+        f"  /balance \u2014 Check your SIDI balance\n"
+        f"  /settings \u2014 Account & bank settings\n\n"
+        f"  <b>\U0001f4e4 Transfers</b>\n"
+        f"  /send \u2014 Send SIDI to anyone\n"
+        f"  /send @user 500 \u2014 Quick send\n"
+        f"  /contacts \u2014 Saved contacts\n\n"
+        f"  <b>\U0001f4b0 Money</b>\n"
+        f"  /buy \u2014 Buy SIDI with Naira\n"
+        f"  /sell \u2014 Cash out to bank\n"
+        f"  /history \u2014 Transaction history\n\n"
+        f"  <b>\U0001f381 Earn</b>\n"
+        f"  /checkin \u2014 Daily free SIDI\n"
+        f"  /refer \u2014 Earn 50 SIDI per referral\n"
+        f"  /premium \u2014 Lower fees & higher limits\n\n"
+        f"  <b>\U0001f4ca Market</b>\n"
+        f"  /price \u2014 SIDI price & market data\n"
+        f"  /stats \u2014 Platform statistics\n"
+        f"  /leaderboard \u2014 Top holders\n\n"
+        f"  <b>\u2139\ufe0f Info</b>\n"
+        f"  /about \u2014 About Sidicoin\n"
+        f"  /help \u2014 This menu\n\n"
+        f"{DIVIDER}\n"
+        f"  {BRAND} {STAR}"
     )
     await message.answer(text, reply_markup=help_keyboard(), disable_web_page_preview=True)
 
 
-# ═══════════════════════════════════════════════════════════════
-# /about
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  /convert  --  Quick SIDI calculator
+# =====================================================================
+
+@router.message(Command("convert", "calc"))
+async def cmd_convert(message: Message):
+    """Quick SIDI/NGN converter."""
+    try:
+        text = message.text.strip()
+        parts = text.split()
+
+        if len(parts) < 2:
+            await message.answer(
+                f"{STAR} <b>SIDI Calculator</b>\n\n"
+                f"Quick convert between SIDI and Naira.\n\n"
+                f"  <code>/convert 500</code>       \u2192  500 SIDI in Naira\n"
+                f"  <code>/convert 5000 NGN</code>  \u2192  {fmt_naira(5000)} in SIDI\n"
+                f"  <code>/convert 10k</code>       \u2192  10,000 SIDI in Naira",
+                reply_markup=home_button_keyboard(),
+            )
+            return
+
+        amount_text = " ".join(parts[1:])
+        valid, sidi_amount = is_valid_amount(amount_text)
+
+        if not valid:
+            await message.answer(
+                f"Could not parse that amount. Try: <code>/convert 500</code> {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+            return
+
+        naira = sidi_to_naira(sidi_amount)
+        from utils.formatting import sidi_to_usd, fmt_usd
+        usd = sidi_to_usd(sidi_amount)
+
+        await message.answer(
+            f"{STAR} <b>Conversion Result</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f48e <b>{fmt_number(sidi_amount)} SIDI</b>\n\n"
+            f"  \U0001f4b5 = {fmt_naira(naira)}\n"
+            f"  \U0001f4b2 = {fmt_usd(usd)}\n\n"
+            f"  Rate: 1 SIDI = {fmt_naira(SIDI_PRICE_NGN)}\n\n"
+            f"{DIVIDER}",
+            reply_markup=home_button_keyboard(),
+        )
+    except Exception as e:
+        logger.error(f"/convert error: {e}", exc_info=True)
+        await message.answer(f"Something went wrong. Please try again {STAR}")
+
+
+# =====================================================================
+#  /about
+# =====================================================================
 
 @router.message(Command("about"))
 async def cmd_about(message: Message):
     """About Sidicoin."""
     text = (
-        f"✦ <b>About Sidicoin</b>\n\n"
-        f"Sidicoin (SIDI) is a cryptocurrency built on TON blockchain "
-        f"with one mission — make financial transfers across Africa "
-        f"instant, free and accessible to everyone.\n\n"
-        f"No bank account required.\n"
-        f"No crypto knowledge needed.\n"
-        f"Just Telegram and a username.\n\n"
-        f"Supply: <b>10,000,000,000 SIDI</b>\n"
-        f"Price: <b>₦25 per SIDI</b>\n"
-        f"Blockchain: TON\n\n"
-        f"Built for Africa. Going global ✦\n\n"
-        f'🌐 <a href="https://coin.sidihost.sbs">coin.sidihost.sbs</a>'
+        f"{STAR} <b>About Sidicoin</b>\n\n"
+        f"Sidicoin (SIDI) is a cryptocurrency built on the TON "
+        f"blockchain with one mission \u2014 make financial transfers "
+        f"across Africa instant, free and accessible to everyone.\n\n"
+        f"{DIVIDER}\n\n"
+        f"  \u2022 No bank account required\n"
+        f"  \u2022 No crypto knowledge needed\n"
+        f"  \u2022 No hidden fees on transfers\n"
+        f"  \u2022 Just Telegram and a @username\n\n"
+        f"{THIN_DIVIDER}\n\n"
+        f"  Supply       10,000,000,000 SIDI\n"
+        f"  Price        {fmt_naira(25)} per SIDI\n"
+        f"  Blockchain   TON\n"
+        f"  Ticker       SIDI\n\n"
+        f"{DIVIDER}\n\n"
+        f"  Built for Africa. Going global {STAR}\n\n"
+        f"  {BRAND}"
     )
     await message.answer(text, reply_markup=home_button_keyboard(), disable_web_page_preview=True)
 
 
-# ═══════════════════════════════════════════════════════════════
-# ADMIN COMMANDS
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  ADMIN COMMANDS
+# =====================================================================
 
 def _is_admin(user_id: int) -> bool:
     return str(user_id) == ADMIN_TELEGRAM_ID
@@ -906,10 +1075,8 @@ def _is_admin(user_id: int) -> bool:
 
 @router.message(Command("admin_stats"))
 async def cmd_admin_stats(message: Message):
-    """Admin: platform dashboard."""
     if not _is_admin(message.from_user.id):
         return
-
     stats = get_all_stats()
     user_count = len(get_all_user_ids())
     holders = int(stats.get("total_holders", 0))
@@ -917,259 +1084,215 @@ async def cmd_admin_stats(message: Message):
     volume = float(stats.get("daily_volume_ngn", 0))
     tx_count = int(stats.get("daily_tx_count", 0))
     fees = float(stats.get("total_fees_sidi", 0))
-
     text = (
-        f"🛡️ <b>Admin Dashboard</b>\n\n"
+        f"\U0001f6e1\ufe0f <b>Admin Dashboard</b>\n\n"
         f"Total Users: {fmt_number(user_count)}\n"
         f"Active Holders: {fmt_number(holders)}\n"
-        f"Circulating Supply: {fmt_number(circulating)} SIDI\n"
+        f"Circulating: {fmt_number(circulating)} SIDI\n"
         f"Daily Volume: {fmt_naira(volume)}\n"
-        f"Daily Transactions: {fmt_number(tx_count)}\n"
-        f"Total Fees: {fmt_number(fees)} SIDI ({fmt_naira(sidi_to_naira(fees))})\n"
-        f"Fee Wallet: {SIDI_FEE_WALLET or 'Not set'}"
+        f"Daily Tx: {fmt_number(tx_count)}\n"
+        f"Fees: {fmt_number(fees)} SIDI ({fmt_naira(sidi_to_naira(fees))})\n"
+        f"Fee Wallet: <code>{SIDI_FEE_WALLET or 'Not set'}</code>"
     )
     await message.answer(text)
 
 
 @router.message(Command("admin_user"))
 async def cmd_admin_user(message: Message):
-    """Admin: view full user profile."""
     if not _is_admin(message.from_user.id):
         return
-
     parts = message.text.strip().split()
     if len(parts) < 2:
         await message.answer("Usage: /admin_user @username")
         return
-
     username = clean_username(parts[1])
     user = find_user_by_username(username)
     if not user:
         await message.answer(f"User @{username} not found.")
         return
-
     import json
     safe_user = {k: v for k, v in user.items() if k != "private_key"}
     safe_user["transactions"] = f"[{len(user.get('transactions', []))} items]"
     safe_user["saved_contacts"] = f"[{len(user.get('saved_contacts', []))} items]"
-
-    text = f"🛡️ <b>User Profile: @{username}</b>\n\n<code>{json.dumps(safe_user, indent=2, default=str)[:3800]}</code>"
+    text = f"\U0001f6e1\ufe0f <b>User: @{username}</b>\n\n<code>{json.dumps(safe_user, indent=2, default=str)[:3800]}</code>"
     await message.answer(text)
 
 
 @router.message(Command("admin_credit"))
 async def cmd_admin_credit(message: Message, bot: Bot):
-    """Admin: credit SIDI to user."""
     if not _is_admin(message.from_user.id):
         return
-
     parts = message.text.strip().split()
     if len(parts) < 3:
         await message.answer("Usage: /admin_credit @username amount")
         return
-
     username = clean_username(parts[1])
     try:
         amount = float(parts[2])
     except ValueError:
         await message.answer("Invalid amount.")
         return
-
     user = find_user_by_username(username)
     if not user:
         await message.answer(f"User @{username} not found.")
         return
-
     update_balance(user["telegram_id"], amount)
     add_transaction(user["telegram_id"], {
-        "type": "bonus",
-        "amount": amount,
+        "type": "bonus", "amount": amount,
         "description": "Admin credit",
         "timestamp": int(time.time()),
         "reference": generate_tx_reference(),
     })
     increment_stat("circulating_supply", amount)
-
-    await message.answer(f"✅ Credited {fmt_number(amount)} SIDI to @{username}")
+    await message.answer(f"\u2705 Credited {fmt_number(amount)} SIDI to @{username}")
     await notify_user(
         bot, user["telegram_id"],
-        f"💎 +<b>{fmt_number(amount)} SIDI</b> has been added to your wallet ✦"
+        f"\U0001f48e +<b>{fmt_number(amount)} SIDI</b> has been added to your wallet {STAR}"
     )
 
 
 @router.message(Command("admin_debit"))
 async def cmd_admin_debit(message: Message, bot: Bot):
-    """Admin: debit SIDI from user."""
     if not _is_admin(message.from_user.id):
         return
-
     parts = message.text.strip().split()
     if len(parts) < 3:
         await message.answer("Usage: /admin_debit @username amount")
         return
-
     username = clean_username(parts[1])
     try:
         amount = float(parts[2])
     except ValueError:
         await message.answer("Invalid amount.")
         return
-
     user = find_user_by_username(username)
     if not user:
         await message.answer(f"User @{username} not found.")
         return
-
     success = update_balance(user["telegram_id"], -amount)
     if not success:
         await message.answer(f"Insufficient balance for @{username}")
         return
-
     add_transaction(user["telegram_id"], {
-        "type": "debit",
-        "amount": amount,
+        "type": "debit", "amount": amount,
         "description": "Admin debit",
         "timestamp": int(time.time()),
         "reference": generate_tx_reference(),
     })
-
-    await message.answer(f"✅ Debited {fmt_number(amount)} SIDI from @{username}")
+    await message.answer(f"\u2705 Debited {fmt_number(amount)} SIDI from @{username}")
 
 
 @router.message(Command("admin_ban"))
 async def cmd_admin_ban(message: Message):
-    """Admin: ban user."""
     if not _is_admin(message.from_user.id):
         return
-
     parts = message.text.strip().split()
     if len(parts) < 2:
         await message.answer("Usage: /admin_ban @username")
         return
-
     username = clean_username(parts[1])
     user = find_user_by_username(username)
     if not user:
         await message.answer(f"User @{username} not found.")
         return
-
     user["is_banned"] = True
     save_user(user["telegram_id"], user)
-    await message.answer(f"🚫 @{username} has been banned.")
+    await message.answer(f"\U0001f6ab @{username} has been banned.")
 
 
 @router.message(Command("admin_unban"))
 async def cmd_admin_unban(message: Message):
-    """Admin: unban user."""
     if not _is_admin(message.from_user.id):
         return
-
     parts = message.text.strip().split()
     if len(parts) < 2:
         await message.answer("Usage: /admin_unban @username")
         return
-
     username = clean_username(parts[1])
     user = find_user_by_username(username)
     if not user:
         await message.answer(f"User @{username} not found.")
         return
-
     user["is_banned"] = False
     save_user(user["telegram_id"], user)
-    await message.answer(f"✅ @{username} has been unbanned.")
+    await message.answer(f"\u2705 @{username} has been unbanned.")
 
 
 @router.message(Command("admin_broadcast"))
 async def cmd_admin_broadcast(message: Message, bot: Bot):
-    """Admin: broadcast message to all users."""
     if not _is_admin(message.from_user.id):
         return
-
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("Usage: /admin_broadcast Your message here")
         return
-
     broadcast_text = parts[1]
     user_ids = get_all_user_ids()
     sent = 0
     failed = 0
-
-    status_msg = await message.answer(f"📡 Broadcasting to {len(user_ids)} users...")
-
+    status_msg = await message.answer(f"\U0001f4e1 Broadcasting to {len(user_ids)} users...")
     for uid in user_ids:
         try:
             success = await notify_user(bot, uid, broadcast_text)
-            if success:
-                sent += 1
-            else:
-                failed += 1
+            sent += 1 if success else 0
+            failed += 0 if success else 1
         except Exception:
             failed += 1
-
     try:
-        await status_msg.edit_text(f"✅ Broadcast complete\nSent: {sent} | Failed: {failed}")
+        await status_msg.edit_text(f"\u2705 Broadcast complete\nSent: {sent} | Failed: {failed}")
     except TelegramBadRequest:
         pass
 
 
 @router.message(Command("admin_fees"))
 async def cmd_admin_fees(message: Message):
-    """Admin: total fees collected."""
     if not _is_admin(message.from_user.id):
         return
-
     fees = get_stat("total_fees_sidi")
     await message.answer(
-        f"💰 <b>Total Fees Collected</b>\n\n"
+        f"\U0001f4b0 <b>Total Fees</b>\n\n"
         f"{fmt_number(fees)} SIDI ({fmt_naira(sidi_to_naira(fees))})\n"
-        f"Fee Wallet: <code>{SIDI_FEE_WALLET or 'Not set'}</code>"
+        f"Wallet: <code>{SIDI_FEE_WALLET or 'Not set'}</code>"
     )
 
 
 @router.message(Command("admin_pending"))
 async def cmd_admin_pending(message: Message):
-    """Admin: list users with pending actions."""
     if not _is_admin(message.from_user.id):
         return
-
     user_ids = get_all_user_ids()
     pending = []
     for uid in user_ids:
         user = get_user(uid)
         if user and user.get("pending_action"):
             pending.append(f"@{user.get('username', uid)}: {user['pending_action']}")
-
     if not pending:
         await message.answer("No pending transactions.")
         return
-
-    text = "🕐 <b>Pending Actions</b>\n\n" + "\n".join(pending[:50])
+    text = "\U0001f552 <b>Pending Actions</b>\n\n" + "\n".join(pending[:50])
     await message.answer(text)
 
 
-# ═══════════════════════════════════════════════════════════════
-# CALLBACK QUERY HANDLERS
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  CALLBACK QUERY HANDLERS
+# =====================================================================
 
 @router.callback_query(F.data == "cmd_home")
 async def cb_home(callback: CallbackQuery):
-    """Show home menu."""
     try:
         user = get_user(callback.from_user.id)
         if not user:
             await callback.answer("Please /start first")
             return
-
         balance = float(user.get("sidi_balance", 0))
         naira = sidi_to_naira(balance)
         name = user.get("full_name", "there")
-
+        badge = _account_badge(user)
         text = (
-            f"✦ {name}'s Wallet\n"
-            f"💎 <b>{fmt_number(balance)} SIDI</b>\n"
-            f"💵 {fmt_naira(naira)}"
+            f"{STAR} <b>{_safe_escape(name)}</b>\n\n"
+            f"  \U0001f48e <b>{fmt_number(balance)} SIDI</b>\n"
+            f"  \U0001f4b5 {fmt_naira(naira)}\n"
+            f"  \U0001f3c6 {badge}"
         )
         await callback.message.edit_text(text, reply_markup=home_keyboard())
         await callback.answer()
@@ -1201,11 +1324,10 @@ async def cb_send(callback: CallbackQuery):
         if not user:
             await callback.answer("Please /start first")
             return
-
         await callback.message.edit_text(
-            "✦ <b>Send SIDI</b>\n\n"
-            "Who would you like to send to?\n"
-            "Enter their Telegram @username:",
+            f"{STAR} <b>Send SIDI</b>\n\n"
+            f"Who would you like to send to?\n\n"
+            f"Enter their Telegram @username:",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(callback.from_user.id, "send_username")
@@ -1224,15 +1346,16 @@ async def cb_buy(callback: CallbackQuery):
         if not user:
             await callback.answer("Please /start first")
             return
-
+        is_prem = check_premium_status(user)
+        fee_label = "0.8%" if is_prem else "1.5%"
         await callback.message.edit_text(
-            "✦ <b>Buy SIDI</b>\n\n"
-            "How much would you like to buy?\n\n"
-            "Enter amount in SIDI or Naira:\n"
-            "• <code>500</code> (500 SIDI)\n"
-            "• <code>₦12500</code> (₦12,500 worth)\n"
-            "• <code>1000 SIDI</code>\n"
-            "• <code>5000 NGN</code>",
+            f"{STAR} <b>Buy SIDI</b>\n\n"
+            f"How much would you like to buy?\n\n"
+            f"  <code>500</code>        \u2192 500 SIDI\n"
+            f"  <code>2000 SIDI</code>  \u2192 2,000 SIDI\n"
+            f"  <code>5000 NGN</code>   \u2192 {fmt_naira(5000)} worth\n"
+            f"  <code>5k</code>         \u2192 5,000 SIDI\n\n"
+            f"Fee: {fee_label}",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(callback.from_user.id, "buy_amount")
@@ -1251,20 +1374,21 @@ async def cb_sell(callback: CallbackQuery):
         if not user:
             await callback.answer("Please /start first")
             return
-
         balance = float(user.get("sidi_balance", 0))
         if balance <= 0:
             await callback.message.edit_text(
-                "You don't have any SIDI to cash out.\nType /buy to purchase some ✦",
+                f"You don't have any SIDI to cash out.\nBuy some with /buy {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             await callback.answer()
             return
-
+        is_prem = check_premium_status(user)
+        fee_label = "0.8%" if is_prem else "1.5%"
         await callback.message.edit_text(
-            f"✦ <b>Cash Out SIDI</b>\n\n"
-            f"Your balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
-            f"How much SIDI would you like to cash out?",
+            f"{STAR} <b>Cash Out SIDI</b>\n\n"
+            f"Balance: <b>{fmt_number(balance)} SIDI</b> ({fmt_naira(sidi_to_naira(balance))})\n\n"
+            f"How much SIDI would you like to cash out?\n"
+            f"Fee: {fee_label}",
             reply_markup=cancel_keyboard(),
         )
         set_pending_action(callback.from_user.id, "sell_amount")
@@ -1283,21 +1407,18 @@ async def cb_refer(callback: CallbackQuery, bot: Bot):
         if not user:
             await callback.answer("Please /start first")
             return
-
         bot_username = await _get_bot_username(bot)
         ref_link = f"https://t.me/{bot_username}?start=ref_{user['telegram_id']}"
         count = int(user.get("referral_count", 0))
         earned = float(user.get("referral_earnings", 0))
-
         text = (
-            f"✦ <b>Refer and Earn</b>\n\n"
-            f"Your referral link:\n<code>{ref_link}</code>\n\n"
-            f"{DIVIDER}\n"
-            f"🎁 Per signup: +50 SIDI ({fmt_naira(sidi_to_naira(50))})\n"
-            f"💰 Per purchase: +10 SIDI ({fmt_naira(sidi_to_naira(10))})\n"
-            f"{DIVIDER}\n"
-            f"👥 Referrals: <b>{count}</b>\n"
-            f"💎 Earned: <b>{fmt_number(earned)} SIDI</b> ({fmt_naira(sidi_to_naira(earned))})\n"
+            f"{STAR} <b>Refer & Earn</b>\n\n"
+            f"Your link:\n<code>{ref_link}</code>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f91d Per signup    +<b>50 SIDI</b>\n"
+            f"  \U0001f4b3 Per purchase  +<b>10 SIDI</b>\n\n"
+            f"  \U0001f465 Referrals: <b>{count}</b>\n"
+            f"  \U0001f48e Earned: <b>{fmt_number(earned)} SIDI</b>\n\n"
             f"{DIVIDER}"
         )
         await callback.message.edit_text(text, reply_markup=refer_keyboard(ref_link))
@@ -1313,26 +1434,18 @@ async def cb_refer(callback: CallbackQuery, bot: Bot):
 async def cb_help(callback: CallbackQuery):
     try:
         text = (
-            f"✦ <b>Sidicoin Commands</b>\n\n"
-            f"<b>💎 Wallet</b>\n"
-            f"/balance — Check your SIDI balance\n"
-            f"/settings — Account settings\n\n"
-            f"<b>📤 Transfers</b>\n"
-            f"/send — Send SIDI to anyone\n"
-            f"/contacts — Quick send to saved contacts\n\n"
-            f"<b>💰 Money</b>\n"
-            f"/buy — Buy SIDI with Naira\n"
-            f"/sell — Cash out SIDI to bank\n"
-            f"/history — Transaction history\n\n"
-            f"<b>🎁 Earn</b>\n"
-            f"/checkin — Daily reward\n"
-            f"/refer — Earn 50 SIDI per referral\n"
-            f"/premium — Upgrade for lower fees\n\n"
-            f"<b>📊 Market</b>\n"
-            f"/price — SIDI price and market data\n"
-            f"/stats — Platform statistics\n"
-            f"/leaderboard — Top holders\n\n"
-            f'🌐 <a href="https://coin.sidihost.sbs">coin.sidihost.sbs</a> ✦'
+            f"{STAR} <b>Sidicoin Commands</b>\n\n"
+            f"  /balance \u2014 Wallet\n"
+            f"  /send \u2014 Send SIDI\n"
+            f"  /buy \u2014 Buy SIDI\n"
+            f"  /sell \u2014 Cash out\n"
+            f"  /checkin \u2014 Daily reward\n"
+            f"  /refer \u2014 Earn free SIDI\n"
+            f"  /history \u2014 Transactions\n"
+            f"  /premium \u2014 Upgrade\n"
+            f"  /price \u2014 Market data\n"
+            f"  /about \u2014 About Sidicoin\n\n"
+            f"  {BRAND} {STAR}"
         )
         await callback.message.edit_text(text, reply_markup=help_keyboard(), disable_web_page_preview=True)
         await callback.answer()
@@ -1347,19 +1460,17 @@ async def cb_settings(callback: CallbackQuery):
         if not user:
             await callback.answer("Please /start first")
             return
-
         joined = fmt_date(user.get("joined_date", 0))
-        bank = user.get("bank_name", "Not set")
+        bank = user.get("bank_name", "")
         account = user.get("bank_account", "")
         account_name = user.get("bank_account_name", "")
-        bank_display = f"{bank} — {account} — {account_name}" if bank != "Not set" and account else "Not set"
-
+        bank_display = f"{bank} \u2014 {account} \u2014 {account_name}" if bank and account else "Not set"
         text = (
-            f"✦ <b>Account Settings</b>\n\n"
-            f"👤 {user.get('full_name', '')} (@{user.get('username', '')})\n"
-            f"🏆 {_account_badge(user)} Account\n"
-            f"📅 Member since {joined}\n"
-            f"🏦 Saved Bank: {bank_display}"
+            f"{STAR} <b>Account Settings</b>\n\n"
+            f"  \U0001f464 {_safe_escape(user.get('full_name', ''))} (@{user.get('username', '')})\n"
+            f"  \U0001f3c6 {_account_badge(user)}\n"
+            f"  \U0001f4c5 Since {joined}\n"
+            f"  \U0001f3e6 {bank_display}"
         )
         await callback.message.edit_text(text, reply_markup=settings_keyboard())
         await callback.answer()
@@ -1384,7 +1495,84 @@ async def cb_history(callback: CallbackQuery):
         await callback.answer("Something went wrong")
 
 
-# ── History filter callbacks ───────────────────────────────────
+@router.callback_query(F.data == "cmd_checkin")
+async def cb_checkin(callback: CallbackQuery):
+    """Daily check-in from inline button."""
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        success, bonus_msg, amount, streak = process_checkin(callback.from_user.id)
+        if not success:
+            await callback.answer(bonus_msg, show_alert=True)
+            return
+        user = get_user(callback.from_user.id)
+        balance = float(user.get("sidi_balance", 0))
+        fires = streak_fire(streak)
+        text = (
+            f"{STAR} <b>Daily Reward Claimed!</b>\n\n"
+            f"+<b>{fmt_number(amount)} SIDI</b>\n\n"
+            f"  {fires}  Streak: <b>{streak} days</b>\n"
+            f"  \U0001f48e  Balance: <b>{fmt_number(balance)} SIDI</b>\n"
+            f"{bonus_msg}"
+        )
+        await callback.message.edit_text(text, reply_markup=home_keyboard())
+        await callback.answer(f"+{fmt_number(amount)} SIDI!")
+    except TelegramBadRequest:
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_checkin error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data == "cmd_leaderboard")
+async def cb_leaderboard(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        await _show_leaderboard(callback, user, is_edit=True)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"cb_leaderboard error: {e}")
+        await callback.answer("Something went wrong")
+
+
+@router.callback_query(F.data == "cmd_premium")
+async def cb_premium(callback: CallbackQuery):
+    try:
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        if check_premium_status(user):
+            expiry = int(user.get("premium_expiry", 0))
+            await callback.message.edit_text(
+                f"{STAR} <b>You're Premium {STAR}</b>\n\nExpires: {fmt_timestamp(expiry)}",
+                reply_markup=home_keyboard(),
+            )
+            await callback.answer()
+            return
+        text = (
+            f"{STAR} <b>Sidicoin Premium</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>Feature</b>          <b>Free</b>     <b>Premium</b>\n\n"
+            f"  Daily Limit       50K      <b>500K</b>\n"
+            f"  Buy/Sell Fee      1.5%     <b>0.8%</b>\n"
+            f"  Daily Check-in    10       <b>25 SIDI</b>\n"
+            f"  Badge             \u2014        <b>{STAR}</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  <b>{fmt_naira(1500)} per month</b>"
+        )
+        await callback.message.edit_text(text, reply_markup=premium_keyboard())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+
+# -- History filter callbacks --
 
 @router.callback_query(F.data.startswith("history_"))
 async def cb_history_filter(callback: CallbackQuery):
@@ -1401,16 +1589,19 @@ async def cb_history_filter(callback: CallbackQuery):
         await callback.answer("Something went wrong")
 
 
-# ── Onboarding callbacks ──────────────────────────────────────
+# -- Onboarding callbacks --
 
 @router.callback_query(F.data == "onboard_2")
 async def cb_onboard_2(callback: CallbackQuery):
     try:
         text = (
-            "✦ <b>How Sidicoin Works</b>\n\n"
-            "Send money to anyone in Africa using just their Telegram username.\n\n"
-            "Example: /send @john 5000\n\n"
-            "No bank transfer stress. No long account numbers. Just a username ✦"
+            f"{STAR} <b>How It Works</b>\n\n"
+            f"Send money to anyone in Africa\n"
+            f"using just their Telegram username.\n\n"
+            f"<b>Example:</b>\n"
+            f"<code>/send @john 5000</code>\n\n"
+            f"That's it. No bank details.\n"
+            f"No routing numbers. No stress {STAR}"
         )
         await callback.message.edit_text(text, reply_markup=onboarding_step2_keyboard())
         await callback.answer()
@@ -1422,9 +1613,12 @@ async def cb_onboard_2(callback: CallbackQuery):
 async def cb_onboard_3(callback: CallbackQuery):
     try:
         text = (
-            "✦ <b>Your First Step</b>\n\n"
-            "Buy some SIDI to get started. "
-            "Or send your referral link to earn free SIDI first!"
+            f"{STAR} <b>Get Started</b>\n\n"
+            f"You have <b>80 SIDI</b> ({fmt_naira(2000)}) ready to go.\n\n"
+            f"\U0001f4b3 <b>Buy more SIDI</b> with Naira\n"
+            f"\U0001f381 <b>Refer friends</b> to earn 50 SIDI each\n"
+            f"\u2705 <b>Check in daily</b> for free SIDI\n\n"
+            f"What's your first move?"
         )
         await callback.message.edit_text(text, reply_markup=onboarding_step3_keyboard())
         await callback.answer()
@@ -1432,7 +1626,9 @@ async def cb_onboard_3(callback: CallbackQuery):
         await callback.answer()
 
 
-# ── Send flow callbacks ───────────────────────────────────────
+# =====================================================================
+#  SEND FLOW CALLBACKS
+# =====================================================================
 
 @router.callback_query(F.data == "send_confirm")
 async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
@@ -1443,9 +1639,8 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
             await callback.answer("No pending transfer found")
             return
 
-        loading_text = "📡 Processing your transfer..."
         try:
-            await callback.message.edit_text(loading_text)
+            await callback.message.edit_text("\U0001f4e1 Processing your transfer...")
         except TelegramBadRequest:
             pass
 
@@ -1455,13 +1650,14 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
         recipient_username = data.get("recipient_username", "")
         recipient_name = data.get("recipient_name", "")
 
-        # Check for large transfer suspicious activity
+        # Suspicious activity check
         if is_large_transfer(amount):
             count = track_large_transfer(callback.from_user.id)
             if count > 3:
                 await notify_admin(
                     bot,
-                    f"⚠️ SUSPICIOUS: @{sender.get('username', '')} made {count} large transfers in 1 hour\n"
+                    f"\u26a0\ufe0f SUSPICIOUS: @{sender.get('username', '')} "
+                    f"made {count} large transfers in 1 hour\n"
                     f"Latest: {fmt_number(amount)} SIDI to @{recipient_username}"
                 )
 
@@ -1471,8 +1667,7 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
 
         if not success:
             await callback.message.edit_text(
-                "Transfer failed — insufficient balance or an error occurred. "
-                "Please try again ✦",
+                f"Transfer failed \u2014 insufficient balance or error. Please try again {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             clear_pending_action(callback.from_user.id)
@@ -1481,94 +1676,88 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
 
         increment_rate_count(callback.from_user.id)
 
-        # Add transactions for both parties
+        # Record transactions
         now = int(time.time())
         sender_username = sender.get("username", "")
 
         add_transaction(callback.from_user.id, {
-            "type": "send",
-            "amount": amount,
+            "type": "send", "amount": amount,
             "other_username": recipient_username,
             "description": f"Sent to @{recipient_username}",
-            "timestamp": now,
-            "reference": reference,
+            "timestamp": now, "reference": reference,
         })
-
         add_transaction(recipient_id, {
-            "type": "receive",
-            "amount": amount,
+            "type": "receive", "amount": amount,
             "other_username": sender_username,
             "description": f"Received from @{sender_username}",
-            "timestamp": now,
-            "reference": reference,
+            "timestamp": now, "reference": reference,
         })
 
         clear_pending_action(callback.from_user.id)
 
-        # Show receipt to sender
+        # Build receipt
         naira = sidi_to_naira(amount)
-        receipt = generate_receipt(
-            "Transfer", sender_username, recipient_username, amount, 0, reference
-        )
-
-        # Refresh sender data
+        receipt = generate_receipt("Transfer", sender_username, recipient_username, amount, 0, reference)
         sender = get_user(callback.from_user.id)
         new_balance = float(sender.get("sidi_balance", 0))
 
         sender_text = (
-            f"✦ <b>Transfer Successful!</b>\n\n"
+            f"{STAR} <b>Transfer Successful!</b>\n\n"
             f"Sent <b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)}) to @{recipient_username}\n"
-            f"New Balance: <b>{fmt_number(new_balance)} SIDI</b>\n\n"
+            f"New Balance: <b>{fmt_number(new_balance)} SIDI</b>\n"
             f"{receipt}"
         )
 
         try:
-            await callback.message.edit_text(sender_text, reply_markup=after_send_keyboard())
+            await callback.message.edit_text(sender_text, reply_markup=after_send_keyboard(), disable_web_page_preview=True)
         except TelegramBadRequest:
             pass
 
         # Notify recipient
         recipient = get_user(recipient_id)
-        recipient_balance = float(recipient.get("sidi_balance", 0)) if recipient else 0
+        r_balance = float(recipient.get("sidi_balance", 0)) if recipient else 0
 
         recipient_text = (
-            f"✦ <b>You received money!</b>\n\n"
-            f"💰 +<b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n"
-            f"From: @{sender_username}\n"
-            f"Speed: Instant ⚡\n"
-            f"Balance: <b>{fmt_number(recipient_balance)} SIDI</b>"
+            f"{STAR} <b>You received money!</b>\n\n"
+            f"  \U0001f4b0 +<b>{fmt_number(amount)} SIDI</b> ({fmt_naira(naira)})\n"
+            f"  From: @{sender_username}\n"
+            f"  Speed: Instant \u26a1\n"
+            f"  Balance: <b>{fmt_number(r_balance)} SIDI</b>\n\n"
+            f"  Ref: <code>{reference}</code>"
         )
         await notify_user(bot, recipient_id, recipient_text, reply_markup=received_money_keyboard())
 
         # Smart suggestions
         if new_balance < 50:
             await callback.message.answer(
-                f"💡 Your balance is getting low. Top up with /buy ✦",
+                f"\U0001f4a1 Balance getting low. Top up with /buy {STAR}",
                 reply_markup=home_button_keyboard(),
             )
 
-        # Milestone check
+        # Milestones
         tx_count = _transfer_count(sender)
+        name = sender.get("full_name", "there")
         if tx_count == 1:
             await callback.message.answer(
-                f"🎉 You just made your first Sidicoin transfer, "
-                f"{sender.get('full_name', 'there')}! "
-                f"Welcome to the future of African finance ✦"
+                f"\U0001f389 Your first Sidicoin transfer, {_safe_escape(name)}! "
+                f"Welcome to the future of African finance {STAR}"
             )
         elif tx_count == 10:
             await callback.message.answer(
-                f"🔥 10 transfers done! You are a true Sidicoin power user, "
-                f"{sender.get('full_name', 'there')} ✦"
+                f"\U0001f525 10 transfers done! True Sidicoin power user, {_safe_escape(name)} {STAR}"
             )
 
         await callback.answer("Transfer successful!")
 
     except Exception as e:
         logger.error(f"send_confirm error: {e}", exc_info=True)
-        await callback.message.edit_text(
-            "Something went wrong on our end. Please try again in a moment ✦",
-            reply_markup=home_button_keyboard(),
-        )
+        try:
+            await callback.message.edit_text(
+                f"Something went wrong. Please try again {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+        except TelegramBadRequest:
+            pass
         await callback.answer()
 
 
@@ -1576,19 +1765,103 @@ async def cb_send_confirm(callback: CallbackQuery, bot: Bot):
 async def cb_send_cancel(callback: CallbackQuery):
     clear_pending_action(callback.from_user.id)
     try:
-        await callback.message.edit_text(
-            "Transfer cancelled ✦", reply_markup=home_keyboard()
-        )
+        await callback.message.edit_text(f"Transfer cancelled {STAR}", reply_markup=home_keyboard())
     except TelegramBadRequest:
         pass
     await callback.answer("Cancelled")
 
 
-# ── Buy flow callbacks ────────────────────────────────────────
+# =====================================================================
+#  DOWNLOADABLE RECEIPT
+# =====================================================================
+
+@router.callback_query(F.data == "receipt_download")
+async def cb_receipt_download(callback: CallbackQuery):
+    """Generate and send a downloadable .txt receipt file for the last transaction."""
+    try:
+        import io
+        from aiogram.types import BufferedInputFile
+
+        user = get_user(callback.from_user.id)
+        if not user:
+            await callback.answer("No wallet found")
+            return
+
+        txns = user.get("transactions", [])
+        if not txns or not isinstance(txns, list):
+            await callback.answer("No transactions found")
+            return
+
+        # Get the most recent transaction
+        last_tx = txns[-1] if txns else None
+        if not last_tx:
+            await callback.answer("No recent transaction")
+            return
+
+        tx_type = last_tx.get("type", "Unknown")
+        amount = float(last_tx.get("amount", 0))
+        ref = last_tx.get("reference", "N/A")
+        description = last_tx.get("description", "")
+        other_user = last_tx.get("other_username", "")
+
+        # Determine sender/recipient based on tx type
+        username = user.get("username", "")
+        if tx_type == "send":
+            sender = username
+            recipient = other_user or description.replace("Sent to @", "")
+        elif tx_type == "receive":
+            sender = other_user or description.replace("Received from @", "")
+            recipient = username
+        elif tx_type == "buy":
+            sender = "Korapay"
+            recipient = username
+        elif tx_type == "sell":
+            sender = username
+            recipient = description or "Bank Account"
+        else:
+            sender = username
+            recipient = other_user or "N/A"
+
+        fee = float(last_tx.get("fee", 0))
+        bank_info = ""
+        if tx_type in ("sell", "cashout"):
+            bank_info = description
+
+        # Generate the downloadable receipt text
+        receipt_text = generate_downloadable_receipt(
+            tx_type=tx_type.title(),
+            sender=sender,
+            recipient=recipient,
+            sidi_amount=amount,
+            fee=fee,
+            reference=ref,
+            bank_info=bank_info,
+        )
+
+        # Create file buffer
+        file_bytes = receipt_text.encode("utf-8")
+        filename = f"sidicoin_receipt_{ref}.txt"
+        doc = BufferedInputFile(file=file_bytes, filename=filename)
+
+        await callback.message.answer_document(
+            document=doc,
+            caption=f"{STAR} Your Sidicoin receipt \u2014 Ref: <code>{ref}</code>",
+            parse_mode="HTML",
+        )
+        await callback.answer("Receipt ready!")
+
+    except Exception as e:
+        logger.error(f"receipt_download error: {e}", exc_info=True)
+        await callback.answer("Could not generate receipt. Try again.")
+
+
+# =====================================================================
+#  BUY FLOW CALLBACKS
+# =====================================================================
 
 @router.callback_query(F.data == "buy_proceed")
 async def cb_buy_proceed(callback: CallbackQuery):
-    """Generate Korapay virtual account for payment."""
+    """Generate Korapay bank transfer account for payment."""
     try:
         action, data = get_pending_action(callback.from_user.id)
         if action != "buy_confirm" or not data:
@@ -1596,7 +1869,7 @@ async def cb_buy_proceed(callback: CallbackQuery):
             return
 
         try:
-            await callback.message.edit_text("🔄 Generating your payment details...")
+            await callback.message.edit_text("\U0001f504 Generating your payment details...")
         except TelegramBadRequest:
             pass
 
@@ -1605,25 +1878,27 @@ async def cb_buy_proceed(callback: CallbackQuery):
         sidi_amount = float(data["sidi_amount"])
         reference = generate_tx_reference()
 
-        # Create virtual account
-        result = await create_virtual_account(
+        # Create bank transfer charge via Korapay
+        result = await create_bank_transfer_charge(
             reference=reference,
             amount=total_ngn,
             customer_name=user.get("full_name", "Sidicoin User"),
         )
 
         if not result.get("success"):
+            error_msg = result.get("message", "Unknown error")
+            logger.error(f"Korapay bank transfer failed: {error_msg}")
             await callback.message.edit_text(
-                f"Could not generate payment details: {result.get('message', 'Unknown error')}.\n"
-                "Please try again ✦",
+                f"Could not generate payment details.\n\n"
+                f"Error: {error_msg}\n\n"
+                f"Please try again in a moment {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             clear_pending_action(callback.from_user.id)
             await callback.answer()
             return
 
-        # Store pending payment for webhook
-        from services.redis import store_pending_payment
+        # Store pending payment for webhook matching
         store_pending_payment(reference, {
             "telegram_id": str(callback.from_user.id),
             "sidi_amount": sidi_amount,
@@ -1640,36 +1915,47 @@ async def cb_buy_proceed(callback: CallbackQuery):
             "account_number": result.get("account_number", ""),
         })
 
+        bank_name = result.get("bank_name", "Wema Bank")
+        acct_num = result.get("account_number", "")
+
         payment_text = (
-            f"✦ <b>Make Your Payment</b>\n\n"
-            f"Bank: <b>{result.get('bank_name', '')}</b>\n"
-            f"Account: <code>{result.get('account_number', '')}</code>\n"
-            f"Amount: <b>{fmt_naira(total_ngn)}</b>\n\n"
-            f"⏰ Expires in 30 minutes\n\n"
-            f"Send EXACTLY {fmt_naira(total_ngn)} to avoid delays.\n"
-            f"We will notify you once confirmed ✦"
+            f"{STAR} <b>Make Your Payment</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f3e6 Bank:    <b>{bank_name}</b>\n"
+            f"  \U0001f4b3 Account: <code>{acct_num}</code>\n"
+            f"  \U0001f4b5 Amount:  <b>{fmt_naira(total_ngn)}</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \u23f0 Expires in 30 minutes\n\n"
+            f"  Send <b>exactly</b> {fmt_naira(total_ngn)} to the\n"
+            f"  account above. We will notify you\n"
+            f"  once your payment is confirmed {STAR}"
         )
         await callback.message.edit_text(payment_text, reply_markup=buy_payment_keyboard())
         await callback.answer()
 
     except Exception as e:
         logger.error(f"buy_proceed error: {e}", exc_info=True)
-        await callback.message.edit_text(
-            "Something went wrong on our end. Please try again in a moment ✦",
-            reply_markup=home_button_keyboard(),
-        )
+        try:
+            await callback.message.edit_text(
+                f"Something went wrong. Please try again {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+        except TelegramBadRequest:
+            pass
         await callback.answer()
 
 
 @router.callback_query(F.data == "buy_paid")
 async def cb_buy_paid(callback: CallbackQuery):
-    """User says they've paid — advise to wait for confirmation."""
     try:
         await callback.message.edit_text(
-            "✦ <b>Waiting for confirmation</b>\n\n"
-            "We're checking for your payment. This usually takes 1-5 minutes.\n"
-            "You'll be notified automatically once your payment is confirmed.\n\n"
-            "If you haven't paid yet, please complete the transfer now ✦",
+            f"{STAR} <b>Waiting for confirmation</b>\n\n"
+            f"We're checking for your payment.\n"
+            f"This usually takes 1-5 minutes.\n\n"
+            f"You'll be notified automatically\n"
+            f"once your payment is confirmed.\n\n"
+            f"If you haven't paid yet, please\n"
+            f"complete the transfer now {STAR}",
             reply_markup=home_button_keyboard(),
         )
         await callback.answer()
@@ -1681,13 +1967,15 @@ async def cb_buy_paid(callback: CallbackQuery):
 async def cb_buy_cancel(callback: CallbackQuery):
     clear_pending_action(callback.from_user.id)
     try:
-        await callback.message.edit_text("Purchase cancelled ✦", reply_markup=home_keyboard())
+        await callback.message.edit_text(f"Purchase cancelled {STAR}", reply_markup=home_keyboard())
     except TelegramBadRequest:
         pass
     await callback.answer("Cancelled")
 
 
-# ── Sell flow callbacks ───────────────────────────────────────
+# =====================================================================
+#  SELL FLOW CALLBACKS
+# =====================================================================
 
 @router.callback_query(F.data == "sell_confirm")
 async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
@@ -1699,7 +1987,7 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
             return
 
         try:
-            await callback.message.edit_text("💸 Processing your cashout...")
+            await callback.message.edit_text("\U0001f4b8 Processing your cashout...")
         except TelegramBadRequest:
             pass
 
@@ -1708,14 +1996,14 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
         # Check 24hr hold
         hold_until = int(user.get("cashout_hold_until", 0))
         if hold_until > int(time.time()):
-            remaining = hold_until - int(time.time())
-            hours = remaining // 3600
-            mins = (remaining % 3600) // 60
+            remaining_secs = hold_until - int(time.time())
+            hours = remaining_secs // 3600
+            mins = (remaining_secs % 3600) // 60
             await callback.message.edit_text(
-                f"⏳ Your account has a 24-hour hold on cashouts.\n"
+                f"\u23f3 <b>24-Hour Hold Active</b>\n\n"
                 f"Time remaining: <b>{hours}h {mins}m</b>\n\n"
-                f"This is a security measure for new accounts. "
-                f"Your SIDI is safe in your wallet ✦",
+                f"This is a security measure for new accounts.\n"
+                f"Your SIDI is safe in your wallet {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             clear_pending_action(callback.from_user.id)
@@ -1735,18 +2023,17 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
         success = update_balance(callback.from_user.id, -total_deduction)
         if not success:
             await callback.message.edit_text(
-                "Insufficient balance for cashout. Please try again ✦",
+                f"Insufficient balance for cashout. Please try again {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             clear_pending_action(callback.from_user.id)
             await callback.answer()
             return
 
-        # Track fees
         if fee_sidi > 0:
             increment_stat("total_fees_sidi", fee_sidi)
 
-        # Process payout
+        # Process payout via Korapay
         reference = generate_tx_reference()
         payout_result = await process_payout(
             reference=reference,
@@ -1756,39 +2043,37 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
             account_name=account_name,
         )
 
-        # Record transaction
         now = int(time.time())
         add_transaction(callback.from_user.id, {
-            "type": "sell",
-            "amount": sidi_amount,
-            "description": f"{bank_name} — {account_name}",
-            "timestamp": now,
-            "reference": reference,
+            "type": "sell", "amount": sidi_amount,
+            "description": f"{bank_name} \u2014 {account_name}",
+            "timestamp": now, "reference": reference,
         })
 
-        # Update sold total
         user = get_user(callback.from_user.id)
         user["total_sold_ngn"] = float(user.get("total_sold_ngn", 0)) + net_ngn
         save_user(callback.from_user.id, user)
-
         clear_pending_action(callback.from_user.id)
 
         if payout_result.get("success"):
             receipt_text = (
-                f"✦ <b>Cashout Successful!</b>\n\n"
-                f"{fmt_naira(net_ngn)} sent to {bank_name}\n"
-                f"Account: {account_name}\n"
-                f"Reference: <code>{reference}</code>\n"
-                f"Status: Processing ⚡\n\n"
-                f"Usually arrives within minutes ✦"
+                f"{STAR} <b>Cashout Successful!</b>\n\n"
+                f"{DIVIDER}\n\n"
+                f"  \U0001f4b0 <b>{fmt_naira(net_ngn)}</b> sent to\n"
+                f"  \U0001f3e6 {bank_name}\n"
+                f"  \U0001f464 {_safe_escape(account_name)}\n"
+                f"  \U0001f4cb Ref: <code>{reference}</code>\n"
+                f"  \u26a1 Status: Processing\n\n"
+                f"{DIVIDER}\n\n"
+                f"  Usually arrives within minutes {STAR}"
             )
         else:
             receipt_text = (
-                f"✦ <b>Cashout Submitted</b>\n\n"
+                f"{STAR} <b>Cashout Submitted</b>\n\n"
                 f"Your cashout of {fmt_naira(net_ngn)} to {bank_name} "
-                f"has been submitted for processing.\n"
-                f"Reference: <code>{reference}</code>\n\n"
-                f"We'll notify you once it's complete ✦"
+                f"has been submitted.\n"
+                f"Ref: <code>{reference}</code>\n\n"
+                f"We'll notify you once complete {STAR}"
             )
 
         await callback.message.edit_text(receipt_text, reply_markup=after_sell_keyboard())
@@ -1797,29 +2082,30 @@ async def cb_sell_confirm(callback: CallbackQuery, bot: Bot):
         sell_txns = [t for t in user.get("transactions", []) if t.get("type") == "sell"]
         if len(sell_txns) <= 1:
             await callback.message.answer(
-                f"💰 First cashout done! That's your Sidicoin working for you ✦"
+                f"\U0001f4b0 First cashout done! That's your Sidicoin working for you {STAR}"
             )
 
         await callback.answer("Cashout processed!")
 
     except Exception as e:
         logger.error(f"sell_confirm error: {e}", exc_info=True)
-        await callback.message.edit_text(
-            "Something went wrong on our end. Please try again in a moment ✦",
-            reply_markup=home_button_keyboard(),
-        )
+        try:
+            await callback.message.edit_text(
+                f"Something went wrong. Please try again {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+        except TelegramBadRequest:
+            pass
         await callback.answer()
 
 
 @router.callback_query(F.data == "sell_bank_yes")
 async def cb_sell_bank_yes(callback: CallbackQuery):
-    """User confirmed saved bank for cashout."""
     try:
         action, data = get_pending_action(callback.from_user.id)
         if action != "sell_bank_check":
             await callback.answer("No pending action")
             return
-
         user = get_user(callback.from_user.id)
         sidi_amount = float(data["sidi_amount"])
         is_premium = check_premium_status(user)
@@ -1829,29 +2115,30 @@ async def cb_sell_bank_yes(callback: CallbackQuery):
         net_ngn = gross_ngn - fee_ngn
         fee_pct = "0.8%" if is_premium else "1.5%"
 
-        # Update pending with bank details and move to confirm
         set_pending_action(callback.from_user.id, "sell_confirm", {
             **data,
             "bank_code": user.get("bank_code", ""),
             "bank_account": user.get("bank_account", ""),
             "bank_name": user.get("bank_name", ""),
             "account_name": user.get("bank_account_name", ""),
-            "fee_sidi": fee_sidi,
-            "net_ngn": net_ngn,
+            "fee_sidi": fee_sidi, "net_ngn": net_ngn,
         })
 
         text = (
-            f"✦ <b>Cashout Summary</b>\n\n"
-            f"Selling: <b>{fmt_number(sidi_amount)} SIDI</b>\n"
-            f"You receive: {fmt_naira(gross_ngn)}\n"
-            f"Fee ({fee_pct}): {fmt_naira(fee_ngn)}\n"
-            f"Net payout: <b>{fmt_naira(net_ngn)}</b>\n\n"
-            f"🏦 {user.get('bank_name', '')} — {user.get('bank_account', '')} — {user.get('bank_account_name', '')}\n\n"
+            f"{STAR} <b>Cashout Summary</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Selling    <b>{fmt_number(sidi_amount)} SIDI</b>\n"
+            f"  Gross      {fmt_naira(gross_ngn)}\n"
+            f"  Fee ({fee_pct})  {fmt_naira(fee_ngn)}\n"
+            f"  Net payout <b>{fmt_naira(net_ngn)}</b>\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  \U0001f3e6 {user.get('bank_name', '')}\n"
+            f"  {user.get('bank_account', '')} \u2014 {user.get('bank_account_name', '')}\n\n"
+            f"{DIVIDER}\n\n"
             f"Confirm cashout?"
         )
         await callback.message.edit_text(text, reply_markup=sell_confirm_keyboard())
         await callback.answer()
-
     except TelegramBadRequest:
         await callback.answer()
     except Exception as e:
@@ -1861,15 +2148,14 @@ async def cb_sell_bank_yes(callback: CallbackQuery):
 
 @router.callback_query(F.data == "sell_change_bank")
 async def cb_sell_change_bank(callback: CallbackQuery):
-    """Prompt user to enter new bank details."""
     try:
         action, data = get_pending_action(callback.from_user.id)
         set_pending_action(callback.from_user.id, "sell_bank_name", data)
-
         await callback.message.edit_text(
-            "✦ <b>Enter Bank Details</b>\n\n"
-            "What bank do you use?\n"
-            "Type the bank name (e.g. GTBank, Access Bank, Kuda, OPay):",
+            f"{STAR} <b>Enter Bank Details</b>\n\n"
+            f"What bank do you use?\n\n"
+            f"Type the bank name:\n"
+            f"e.g. GTBank, Access, Kuda, OPay, FirstBank",
             reply_markup=cancel_keyboard(),
         )
         await callback.answer()
@@ -1881,20 +2167,21 @@ async def cb_sell_change_bank(callback: CallbackQuery):
 async def cb_sell_cancel(callback: CallbackQuery):
     clear_pending_action(callback.from_user.id)
     try:
-        await callback.message.edit_text("Cashout cancelled ✦", reply_markup=home_keyboard())
+        await callback.message.edit_text(f"Cashout cancelled {STAR}", reply_markup=home_keyboard())
     except TelegramBadRequest:
         pass
     await callback.answer("Cancelled")
 
 
-# ── Premium callbacks ─────────────────────────────────────────
+# =====================================================================
+#  PREMIUM CALLBACKS
+# =====================================================================
 
 @router.callback_query(F.data == "premium_upgrade")
 async def cb_premium_upgrade(callback: CallbackQuery):
-    """Start premium payment flow via Korapay."""
     try:
         try:
-            await callback.message.edit_text("🔄 Generating your payment details...")
+            await callback.message.edit_text("\U0001f504 Generating your payment details...")
         except TelegramBadRequest:
             pass
 
@@ -1902,7 +2189,7 @@ async def cb_premium_upgrade(callback: CallbackQuery):
         reference = generate_tx_reference()
         amount = 1500.0
 
-        result = await create_virtual_account(
+        result = await create_bank_transfer_charge(
             reference=reference,
             amount=amount,
             customer_name=user.get("full_name", "Sidicoin User"),
@@ -1911,13 +2198,12 @@ async def cb_premium_upgrade(callback: CallbackQuery):
 
         if not result.get("success"):
             await callback.message.edit_text(
-                "Could not generate payment details. Please try again ✦",
+                f"Could not generate payment details. Please try again {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             await callback.answer()
             return
 
-        from services.redis import store_pending_payment
         store_pending_payment(reference, {
             "telegram_id": str(callback.from_user.id),
             "type": "premium",
@@ -1930,21 +2216,27 @@ async def cb_premium_upgrade(callback: CallbackQuery):
         })
 
         text = (
-            f"✦ <b>Premium Payment</b>\n\n"
-            f"Bank: <b>{result.get('bank_name', '')}</b>\n"
-            f"Account: <code>{result.get('account_number', '')}</code>\n"
-            f"Amount: <b>{fmt_naira(amount)}</b>\n\n"
-            f"⏰ Expires in 30 minutes\n"
-            f"Send EXACTLY {fmt_naira(amount)} ✦"
+            f"{STAR} <b>Premium Payment</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \U0001f3e6 Bank:    <b>{result.get('bank_name', '')}</b>\n"
+            f"  \U0001f4b3 Account: <code>{result.get('account_number', '')}</code>\n"
+            f"  \U0001f4b5 Amount:  <b>{fmt_naira(amount)}</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  \u23f0 Expires in 30 minutes\n"
+            f"  Send exactly {fmt_naira(amount)} {STAR}"
         )
         await callback.message.edit_text(text, reply_markup=premium_payment_keyboard())
         await callback.answer()
 
     except Exception as e:
         logger.error(f"premium_upgrade error: {e}", exc_info=True)
-        await callback.message.edit_text(
-            "Something went wrong. Please try again ✦", reply_markup=home_button_keyboard()
-        )
+        try:
+            await callback.message.edit_text(
+                f"Something went wrong. Please try again {STAR}",
+                reply_markup=home_button_keyboard(),
+            )
+        except TelegramBadRequest:
+            pass
         await callback.answer()
 
 
@@ -1952,8 +2244,8 @@ async def cb_premium_upgrade(callback: CallbackQuery):
 async def cb_premium_paid(callback: CallbackQuery):
     try:
         await callback.message.edit_text(
-            "✦ Checking for your payment...\n\n"
-            "You'll be notified automatically once confirmed ✦",
+            f"{STAR} Checking for your payment...\n\n"
+            f"You'll be notified once confirmed {STAR}",
             reply_markup=home_button_keyboard(),
         )
         await callback.answer()
@@ -1961,39 +2253,36 @@ async def cb_premium_paid(callback: CallbackQuery):
         await callback.answer()
 
 
-# ── Contact quick-send callback ────────────────────────────────
+# =====================================================================
+#  MISC CALLBACKS
+# =====================================================================
 
 @router.callback_query(F.data.startswith("contact_send_"))
 async def cb_contact_send(callback: CallbackQuery):
-    """Quick send to a saved contact."""
     try:
         recipient_id = callback.data.replace("contact_send_", "")
         recipient = get_user(recipient_id)
         if not recipient:
             await callback.answer("Contact not found")
             return
-
         set_pending_action(callback.from_user.id, "send_amount", {
             "recipient_id": recipient_id,
             "recipient_username": recipient.get("username", ""),
             "recipient_name": recipient.get("full_name", ""),
         })
-
+        r_name = recipient.get("full_name", recipient.get("username", ""))
         await callback.message.edit_text(
-            f"✦ <b>Send to @{recipient.get('username', '')}</b>\n\n"
+            f"{STAR} <b>Send to {_safe_escape(r_name)}</b>\n\n"
             f"How much SIDI would you like to send?",
             reply_markup=cancel_keyboard(),
         )
         await callback.answer()
-
     except TelegramBadRequest:
         await callback.answer()
     except Exception as e:
         logger.error(f"contact_send error: {e}")
         await callback.answer("Something went wrong")
 
-
-# ── Referral copy callback ─────────────────────────────────────
 
 @router.callback_query(F.data == "refer_copy")
 async def cb_refer_copy(callback: CallbackQuery, bot: Bot):
@@ -2006,16 +2295,15 @@ async def cb_refer_copy(callback: CallbackQuery, bot: Bot):
         await callback.answer("Could not copy link")
 
 
-# ── Settings callbacks ─────────────────────────────────────────
-
 @router.callback_query(F.data == "settings_bank")
 async def cb_settings_bank(callback: CallbackQuery):
     try:
         set_pending_action(callback.from_user.id, "settings_bank_name")
         await callback.message.edit_text(
-            "✦ <b>Update Bank Details</b>\n\n"
-            "What bank do you use?\n"
-            "Type the bank name (e.g. GTBank, Access Bank, Kuda, OPay):",
+            f"{STAR} <b>Update Bank Details</b>\n\n"
+            f"What bank do you use?\n\n"
+            f"Type the bank name:\n"
+            f"e.g. GTBank, Access, Kuda, OPay, FirstBank",
             reply_markup=cancel_keyboard(),
         )
         await callback.answer()
@@ -2030,94 +2318,61 @@ async def cb_settings_wallet(callback: CallbackQuery):
         if not user:
             await callback.answer("No wallet found")
             return
-        address = user.get("wallet_address", "")
-        await callback.answer(f"TON Wallet: {address}", show_alert=True)
+        address = user.get("wallet_address", "N/A")
+        await callback.answer(f"TON: {address}", show_alert=True)
     except Exception:
-        await callback.answer("Could not get wallet address")
+        await callback.answer("Could not get wallet")
 
-
-@router.callback_query(F.data == "settings_notif")
-async def cb_settings_notif(callback: CallbackQuery):
-    try:
-        await callback.answer("Notifications are always on for important updates ✦", show_alert=True)
-    except Exception:
-        pass
-
-
-# ── Leaderboard callbacks ─────────────────────────────────────
 
 @router.callback_query(F.data.startswith("leaderboard_"))
 async def cb_leaderboard_type(callback: CallbackQuery):
     try:
-        # For now all views show the same data
         user = get_user(callback.from_user.id)
-        leaders = get_leaderboard(5)
-        rank = get_user_rank(callback.from_user.id)
-        balance = float(user.get("sidi_balance", 0)) if user else 0
-
-        medals = ["🥇", "🥈", "🥉", "4.", "5."]
-        lines = ["✦ <b>Top Sidicoin Holders</b>\n"]
-
-        for i, (uid, score) in enumerate(leaders):
-            leader_user = get_user(uid)
-            uname = leader_user.get("username", uid) if leader_user else uid
-            medal = medals[i] if i < len(medals) else f"{i+1}."
-            lines.append(f"{medal} @{uname} — <b>{fmt_number(score)} SIDI</b>")
-
-        lines.append(f"\nYour Rank: <b>#{rank}</b>")
-        lines.append(f"Your Balance: <b>{fmt_number(balance)} SIDI</b> ✦")
-
-        await callback.message.edit_text("\n".join(lines), reply_markup=leaderboard_keyboard())
-        await callback.answer()
-    except TelegramBadRequest:
+        if not user:
+            await callback.answer("Please /start first")
+            return
+        await _show_leaderboard(callback, user, is_edit=True)
         await callback.answer()
     except Exception as e:
         logger.error(f"leaderboard callback error: {e}")
         await callback.answer("Something went wrong")
 
 
-# ── Cancel action callback ─────────────────────────────────────
-
 @router.callback_query(F.data == "cancel_action")
 async def cb_cancel_action(callback: CallbackQuery):
     clear_pending_action(callback.from_user.id)
     try:
-        await callback.message.edit_text("Action cancelled ✦", reply_markup=home_keyboard())
+        await callback.message.edit_text(f"Action cancelled {STAR}", reply_markup=home_keyboard())
     except TelegramBadRequest:
         pass
     await callback.answer("Cancelled")
 
 
-# ═══════════════════════════════════════════════════════════════
-# TEXT MESSAGE HANDLER (multi-step flows + AI)
-# ═══════════════════════════════════════════════════════════════
+# =====================================================================
+#  TEXT MESSAGE HANDLER (multi-step flows + AI)
+# =====================================================================
 
 @router.message(F.text)
 async def handle_text_message(message: Message, bot: Bot):
-    """
-    Handle all non-command text messages.
-    Routes to pending action flows or AI assistant.
-    """
+    """Handle all non-command text messages."""
     try:
         user_id = message.from_user.id
         text = message.text.strip()
         sanitized = sanitize_input(text)
 
-        # Check for pending multi-step actions
         action, data = get_pending_action(user_id)
 
         if action:
             await _handle_pending_action(message, bot, action, data, sanitized)
             return
 
-        # No pending action — use AI assistant
-        loading = await message.answer("✦ Sidi is thinking...")
+        # No pending action -- use AI assistant
+        loading = await message.answer(f"{STAR} Sidi is thinking...")
 
-        # Check for intent to guide user
         intent = detect_intent(sanitized)
         if intent:
             ai_response = await get_ai_response(sanitized, message.from_user.first_name or "User")
-            response_text = f"{ai_response}\n\n💡 Try: {intent}"
+            response_text = f"{ai_response}\n\n\U0001f4a1 Try: {intent}"
         else:
             ai_response = await get_ai_response(sanitized, message.from_user.first_name or "User")
             response_text = ai_response
@@ -2130,7 +2385,7 @@ async def handle_text_message(message: Message, bot: Bot):
     except Exception as e:
         logger.error(f"text_message error: {e}", exc_info=True)
         await message.answer(
-            "Something went wrong on our end. Please try again in a moment ✦",
+            f"Something went wrong. Please try again {STAR}",
             reply_markup=home_button_keyboard(),
         )
 
@@ -2139,13 +2394,12 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
     """Route pending multi-step conversation flows."""
     user_id = message.from_user.id
 
-    # ── Send flow ──────────────────────────────────────────
+    # -- Send flow --
     if action == "send_username":
-        # User is entering recipient username
         if not is_valid_username(text):
             await message.answer(
-                "That doesn't look like a valid username. "
-                "Please enter a Telegram @username (e.g. @john):",
+                "That doesn't look like a valid username.\n"
+                "Enter a Telegram @username (e.g. @john):",
                 reply_markup=cancel_keyboard(),
             )
             return
@@ -2154,18 +2408,17 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         recipient = find_user_by_username(clean)
         if not recipient:
             bot_username = await _get_bot_username(bot)
-            sender = get_user(user_id)
             invite_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
             await message.answer(
                 f"@{clean} hasn't joined Sidicoin yet.\n\n"
-                f"Invite them: {invite_link} ✦",
+                f"Invite them:\n<code>{invite_link}</code> {STAR}",
                 reply_markup=home_button_keyboard(),
             )
             clear_pending_action(user_id)
             return
 
         if str(recipient["telegram_id"]) == str(user_id):
-            await message.answer("You can't send SIDI to yourself ✦", reply_markup=home_button_keyboard())
+            await message.answer(f"You can't send SIDI to yourself {STAR}", reply_markup=home_button_keyboard())
             clear_pending_action(user_id)
             return
 
@@ -2175,9 +2428,10 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
             "recipient_name": recipient.get("full_name", ""),
         })
 
+        r_name = recipient.get("full_name", "")
         await message.answer(
-            f"✦ Sending to @{recipient.get('username', clean)} "
-            f"({recipient.get('full_name', '')})\n\n"
+            f"{STAR} Sending to @{recipient.get('username', clean)}"
+            f"{f' ({_safe_escape(r_name)})' if r_name else ''}\n\n"
             f"How much SIDI would you like to send?",
             reply_markup=cancel_keyboard(),
         )
@@ -2186,24 +2440,19 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         valid, amount = is_valid_amount(text)
         if not valid or amount <= 0:
             await message.answer(
-                "Please enter a valid amount (e.g. 500 or ₦12500):",
+                "Please enter a valid amount (e.g. 500, 5k, N12500):",
                 reply_markup=cancel_keyboard(),
             )
             return
-
         sender = get_user(user_id)
-        await _process_send_flow(
-            message, bot, sender,
-            data.get("recipient_username", ""),
-            amount,
-        )
+        await _process_send_flow(message, bot, sender, data.get("recipient_username", ""), amount)
 
-    # ── Buy flow ──────────────────────────────────────────
+    # -- Buy flow --
     elif action == "buy_amount":
         valid, sidi_amount = is_valid_amount(text)
         if not valid or sidi_amount <= 0:
             await message.answer(
-                "Please enter a valid amount (e.g. 500, ₦12500, 1000 SIDI):",
+                "Please enter a valid amount (e.g. 500, 5k, N12500):",
                 reply_markup=cancel_keyboard(),
             )
             return
@@ -2223,52 +2472,48 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         })
 
         text = (
-            f"✦ <b>Purchase Summary</b>\n\n"
-            f"You will receive: <b>{fmt_number(sidi_amount)} SIDI</b>\n"
-            f"Cost: {fmt_naira(naira_cost)}\n"
-            f"Fee ({fee_pct}): {fmt_naira(fee_ngn)}\n"
-            f"Total to pay: <b>{fmt_naira(total_ngn)}</b>\n"
-            f"Payment method: Bank Transfer"
+            f"{STAR} <b>Purchase Summary</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  You receive  <b>{fmt_number(sidi_amount)} SIDI</b>\n"
+            f"  Cost         {fmt_naira(naira_cost)}\n"
+            f"  Fee ({fee_pct})    {fmt_naira(fee_ngn)}\n"
+            f"  Total        <b>{fmt_naira(total_ngn)}</b>\n"
+            f"  Method       Bank Transfer\n\n"
+            f"{DIVIDER}"
         )
         await message.answer(text, reply_markup=buy_confirm_keyboard())
 
-    # ── Sell flow ──────────────────────────────────────────
+    # -- Sell flow --
     elif action == "sell_amount":
         valid, sidi_amount = is_valid_amount(text)
         if not valid or sidi_amount <= 0:
-            await message.answer(
-                "Please enter a valid amount:",
-                reply_markup=cancel_keyboard(),
-            )
+            await message.answer("Please enter a valid amount:", reply_markup=cancel_keyboard())
             return
 
         user = get_user(user_id)
         balance = float(user.get("sidi_balance", 0))
         if sidi_amount > balance:
             await message.answer(
-                f"Insufficient balance. You have <b>{fmt_number(balance)} SIDI</b> ✦",
+                f"Insufficient balance. You have <b>{fmt_number(balance)} SIDI</b> {STAR}",
                 reply_markup=cancel_keyboard(),
             )
             return
 
-        # Check if user has saved bank
         if user.get("bank_account") and user.get("bank_name"):
             set_pending_action(user_id, "sell_bank_check", {"sidi_amount": sidi_amount})
-
             await message.answer(
-                f"✦ <b>Cashout to:</b>\n\n"
-                f"🏦 {user.get('bank_name', '')}\n"
-                f"Account: {user.get('bank_account', '')}\n"
-                f"Name: {user.get('bank_account_name', '')}\n\n"
+                f"{STAR} <b>Cashout to:</b>\n\n"
+                f"  \U0001f3e6 {user.get('bank_name', '')}\n"
+                f"  {user.get('bank_account', '')} \u2014 {user.get('bank_account_name', '')}\n\n"
                 f"Use this account?",
                 reply_markup=sell_bank_confirm_keyboard(),
             )
         else:
             set_pending_action(user_id, "sell_bank_name", {"sidi_amount": sidi_amount})
             await message.answer(
-                "✦ <b>Enter Bank Details</b>\n\n"
-                "What bank do you use?\n"
-                "Type the bank name (e.g. GTBank, Access Bank, Kuda, OPay):",
+                f"{STAR} <b>Enter Bank Details</b>\n\n"
+                f"What bank do you use?\n"
+                f"e.g. GTBank, Access, Kuda, OPay, FirstBank",
                 reply_markup=cancel_keyboard(),
             )
 
@@ -2276,45 +2521,42 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         bank_code = get_bank_code(text)
         if not bank_code:
             await message.answer(
-                "Bank not recognized. Please try again with a common name "
-                "(e.g. GTBank, Access Bank, Kuda, OPay, FirstBank, UBA, Zenith):",
+                "Bank not recognized. Try again:\n"
+                "e.g. GTBank, Access, Kuda, OPay, FirstBank, UBA, Zenith",
                 reply_markup=cancel_keyboard(),
             )
             return
-
         set_pending_action(user_id, "sell_bank_account", {
-            **data,
-            "bank_name": text.strip().title(),
-            "bank_code": bank_code,
+            **data, "bank_name": text.strip().title(), "bank_code": bank_code,
         })
-
         await message.answer(
-            f"✦ Bank: <b>{text.strip().title()}</b>\n\n"
+            f"{STAR} Bank: <b>{text.strip().title()}</b>\n\n"
             f"Enter your 10-digit account number:",
             reply_markup=cancel_keyboard(),
         )
 
     elif action == "sell_bank_account":
         if not is_valid_bank_account(text):
-            await message.answer(
-                "Please enter a valid 10-digit account number:",
-                reply_markup=cancel_keyboard(),
-            )
+            await message.answer("Please enter a valid 10-digit account number:", reply_markup=cancel_keyboard())
             return
 
-        loading = await message.answer("🏦 Verifying account details...")
-
+        loading = await message.answer("\U0001f3e6 Verifying account details...")
         bank_code = data.get("bank_code", "")
         account_number = text.strip()
 
-        # Verify bank account via Korapay
         result = await verify_bank_account(bank_code, account_number)
 
         if not result.get("success"):
+            error_msg = result.get("message", "Unknown error")
             try:
                 await loading.edit_text(
-                    f"Could not verify account: {result.get('message', 'Unknown error')}.\n"
-                    "Please check and try again ✦",
+                    f"\u274c <b>Account Verification Failed</b>\n\n"
+                    f"{error_msg}\n\n"
+                    f"Please check:\n"
+                    f"\u2022 Your bank name is correct\n"
+                    f"\u2022 Your account number is 10 digits\n"
+                    f"\u2022 The account is active\n\n"
+                    f"Enter your account number again or /cancel {STAR}",
                     reply_markup=cancel_keyboard(),
                 )
             except TelegramBadRequest:
@@ -2325,7 +2567,6 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         bank_name = data.get("bank_name", "")
         sidi_amount = float(data.get("sidi_amount", 0))
 
-        # Save bank details
         update_bank_details(user_id, bank_name, bank_code, account_number, account_name)
 
         user = get_user(user_id)
@@ -2337,21 +2578,21 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         fee_pct = "0.8%" if is_premium else "1.5%"
 
         set_pending_action(user_id, "sell_confirm", {
-            **data,
-            "bank_account": account_number,
-            "account_name": account_name,
-            "fee_sidi": fee_sidi,
-            "net_ngn": net_ngn,
+            **data, "bank_account": account_number, "account_name": account_name,
+            "fee_sidi": fee_sidi, "net_ngn": net_ngn,
         })
 
         confirm_text = (
-            f"✦ <b>Cashout Summary</b>\n\n"
-            f"Selling: <b>{fmt_number(sidi_amount)} SIDI</b>\n"
-            f"You receive: {fmt_naira(gross_ngn)}\n"
-            f"Fee ({fee_pct}): {fmt_naira(fee_ngn)}\n"
-            f"Net payout: <b>{fmt_naira(net_ngn)}</b>\n\n"
-            f"🏦 {bank_name} — {account_number} — <b>{account_name}</b>\n\n"
-            f"Confirm cashout?"
+            f"{STAR} <b>Cashout Summary</b>\n\n"
+            f"{DIVIDER}\n\n"
+            f"  Selling    <b>{fmt_number(sidi_amount)} SIDI</b>\n"
+            f"  Gross      {fmt_naira(gross_ngn)}\n"
+            f"  Fee ({fee_pct})  {fmt_naira(fee_ngn)}\n"
+            f"  Net payout <b>{fmt_naira(net_ngn)}</b>\n\n"
+            f"{THIN_DIVIDER}\n\n"
+            f"  \U0001f3e6 {bank_name}\n"
+            f"  {account_number} \u2014 <b>{_safe_escape(account_name)}</b>\n\n"
+            f"{DIVIDER}\n\nConfirm cashout?"
         )
 
         try:
@@ -2359,46 +2600,38 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
         except TelegramBadRequest:
             await message.answer(confirm_text, reply_markup=sell_confirm_keyboard())
 
-    # ── Settings bank update flow ──────────────────���───────
+    # -- Settings bank update --
     elif action == "settings_bank_name":
         bank_code = get_bank_code(text)
         if not bank_code:
-            await message.answer(
-                "Bank not recognized. Please try again:",
-                reply_markup=cancel_keyboard(),
-            )
+            await message.answer("Bank not recognized. Try again:", reply_markup=cancel_keyboard())
             return
-
         set_pending_action(user_id, "settings_bank_account", {
-            "bank_name": text.strip().title(),
-            "bank_code": bank_code,
+            "bank_name": text.strip().title(), "bank_code": bank_code,
         })
-
         await message.answer(
-            f"✦ Bank: <b>{text.strip().title()}</b>\n\n"
-            "Enter your 10-digit account number:",
+            f"{STAR} Bank: <b>{text.strip().title()}</b>\n\nEnter your 10-digit account number:",
             reply_markup=cancel_keyboard(),
         )
 
     elif action == "settings_bank_account":
         if not is_valid_bank_account(text):
-            await message.answer(
-                "Please enter a valid 10-digit account number:",
-                reply_markup=cancel_keyboard(),
-            )
+            await message.answer("Please enter a valid 10-digit account number:", reply_markup=cancel_keyboard())
             return
 
-        loading = await message.answer("🏦 Verifying account details...")
-
+        loading = await message.answer("\U0001f3e6 Verifying account details...")
         bank_code = data.get("bank_code", "")
         account_number = text.strip()
 
         result = await verify_bank_account(bank_code, account_number)
-
         if not result.get("success"):
+            error_msg = result.get("message", "Unknown error")
             try:
                 await loading.edit_text(
-                    f"Could not verify account. Please check and try again ✦",
+                    f"\u274c <b>Verification Failed</b>\n\n"
+                    f"{error_msg}\n\n"
+                    f"Check your bank and account number, "
+                    f"then try again {STAR}",
                     reply_markup=cancel_keyboard(),
                 )
             except TelegramBadRequest:
@@ -2407,25 +2640,22 @@ async def _handle_pending_action(message: Message, bot: Bot, action: str, data: 
 
         account_name = result.get("account_name", "")
         bank_name = data.get("bank_name", "")
-
         update_bank_details(user_id, bank_name, bank_code, account_number, account_name)
         clear_pending_action(user_id)
 
         try:
             await loading.edit_text(
-                f"✅ <b>Bank details updated!</b>\n\n"
-                f"🏦 {bank_name}\n"
-                f"Account: {account_number}\n"
-                f"Name: {account_name} ✦",
+                f"\u2705 <b>Bank details updated!</b>\n\n"
+                f"  \U0001f3e6 {bank_name}\n"
+                f"  {account_number} \u2014 {_safe_escape(account_name)} {STAR}",
                 reply_markup=settings_keyboard(),
             )
         except TelegramBadRequest:
             pass
 
     else:
-        # Unknown pending action — clear and use AI
         clear_pending_action(user_id)
-        loading = await message.answer("✦ Sidi is thinking...")
+        loading = await message.answer(f"{STAR} Sidi is thinking...")
         ai_response = await get_ai_response(text, message.from_user.first_name or "User")
         try:
             await loading.edit_text(ai_response, reply_markup=home_button_keyboard())
